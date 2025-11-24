@@ -22,14 +22,16 @@ def main(filename: str) -> None:
 	point_sets: List[PointSet] = load_point_sets(filename)
 	while True:
 		command = input("Enter a command:\n"
-		                "  add – draw a new line on the warped image\n"
+		                "  horizontal – draw a new horizontal line on the warped image\n"
+		                "  vertical – draw a new vertical line on the warped image\n"
+		                "  oblique – draw a new oblique line on the warped image\n"
 		                "  remove – delete one of the lines previusly drawn on the warped image\n"
 		                "  dewarp – apply the dewarping algorithm\n"
 		                "  exit – give up like a baby loser\n"
 		                "> ")
 		try:
-			if command.startswith("a") or command == "+":
-				point_sets = add_points(warped_image, point_sets)
+			if command.startswith("h") or command.startswith("v") or command.startswith("o") or command == "l":
+				point_sets = add_points(command, warped_image, point_sets)
 				save_point_sets(filename, point_sets)
 			elif command.startswith("r") or command == "-":
 				point_sets = remove_points(warped_image, point_sets)
@@ -51,23 +53,18 @@ def main(filename: str) -> None:
 			print(e)
 
 
-def add_points(warped_image: NDArray, point_sets: List[PointSet]) -> List[PointSet]:
+def add_points(kind: str, warped_image: NDArray, point_sets: List[PointSet]) -> List[PointSet]:
 	# query the user for the type of point set
-	response = input("Choose a line type:\n"
-	                 "  horizontal\n"
-	                 "  vertical\n"
-	                 "  oblique\n"
-	                 "> ")
-	if response.startswith("h"):
+	if kind.startswith("h"):
 		angle = 0
-		response = input(f"Enter the line's x-value, if known, or press ENTER if not "
+		response = input(f"Enter the line's y-value, if known, or press ENTER if not "
 		                 f"(0 is the top edge and {shape(warped_image)[0]} is the bottom edge)\n"
 		                 f"> ")
 		if len(response) == 0:
 			offset = None
 		else:
 			offset = float(response)
-	elif response.startswith("v"):
+	elif kind.startswith("v"):
 		angle = pi/2
 		response = input(f"Enter the line's x-value, if known, or press ENTER if not "
 		                 f"(0 is the left edge and {shape(warped_image)[1]} is the right edge)\n"
@@ -76,7 +73,7 @@ def add_points(warped_image: NDArray, point_sets: List[PointSet]) -> List[PointS
 			offset = None
 		else:
 			offset = float(response)
-	elif response.startswith("o") or response == "l":
+	elif kind.startswith("o") or kind == "l":
 		response = input("Enter the line's angle, if known, or press ENTER if not "
 		                 "(0 is horizontal, 90 or -90 is vertical, 45 is top-left to bottom-right, and -45 is top-right to bottom-left)\n"
 		                 "> ")
@@ -119,6 +116,8 @@ def add_points(warped_image: NDArray, point_sets: List[PointSet]) -> List[PointS
 	if len(points) > 0:
 		point_sets.append(PointSet(angle, offset, array(points)))
 		print("Successfully added a line!")
+	else:
+		print("Declined to add a line.")
 	return point_sets
 
 
@@ -164,6 +163,8 @@ def remove_points(warped_image: NDArray, point_sets: List[PointSet]) -> List[Poi
 	if selected_index is not None:
 		point_sets.pop(selected_index)
 		print("Successfully removed a line!")
+	else:
+		print("Declined to remove a line.")
 	return point_sets
 
 
