@@ -1,12 +1,12 @@
 import sys
 from os import path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import matplotlib.image as img
 from matplotlib.backend_bases import MouseButton
 from matplotlib.figure import Figure
-from numpy import shape, array, radians, pi, sin, cos, mean
+from numpy import shape, array, radians, pi, sin, cos, mean, hypot, inf, empty
 from numpy.typing import NDArray
 
 
@@ -31,11 +31,9 @@ def main(filename: str) -> None:
 			if command.startswith("a") or command == "+":
 				point_sets = add_points(warped_image, point_sets)
 				save_point_sets(filename, point_sets)
-				print("Successfully added a line!")
 			elif command.startswith("r") or command == "-":
 				point_sets = remove_points(warped_image, point_sets)
 				save_point_sets(filename, point_sets)
-				print("Successfully removed a line!")
 			elif command.startswith("d") or command == "w":
 				flat_image = dewarp(warped_image, point_sets)
 				show_final_image(filename, flat_image)
@@ -90,13 +88,13 @@ def add_points(warped_image: NDArray, point_sets: List[PointSet]) -> List[PointS
 	else:
 		raise ValueError("I don't recognize that command.  use one of the commands from the list I just gave you, please.")
 
-	# plot the image and current points, and wait for the user to close the window
+	# plot the image and current points
 	print("Navigate to the image window and right click to add points.  Press backspace to delete points.  Close the window to continue.")
 	figure = show_current_state(warped_image, point_sets, title="Right-click to add points")
 	scatter = plt.scatter([], [], c="#000000", marker=".")
 
 	# listen for the user right clicking on the image
-	points = []
+	points: List[Tuple[float, float]] = []
 
 	def on_click(event):
 		if event.button == MouseButton.RIGHT:
@@ -106,27 +104,66 @@ def add_points(warped_image: NDArray, point_sets: List[PointSet]) -> List[PointS
 
 	def on_key(event):
 		if event.key == "backspace" or event.key == "delete":
-			points.pop()
+			if len(points) > 0:
+				points.pop()
 			scatter.set_offsets(array(points))
 			figure.canvas.draw()
 
 	figure.canvas.mpl_connect("button_press_event", on_click)
 	figure.canvas.mpl_connect("key_press_event", on_key)
+
+	# wait for the user to close the window
 	plt.show()
 
-	point_sets.append(PointSet(angle, offset, array(points)))
+	# add the new points to the main list
+	if len(points) > 0:
+		point_sets.append(PointSet(angle, offset, array(points)))
+		print("Successfully added a line!")
 	return point_sets
 
 
 def remove_points(warped_image: NDArray, point_sets: List[PointSet]) -> List[PointSet]:
-	# listen for the user right clicking on the image
-
 	# plot the image and current points, and wait for the user to close the window
-	print("Navigate to the image window and right click to select a line.  Close the window to confirm.")
-	show_current_state(warped_image, point_sets, title="Right-click to select the transgressor")
+	print("Navigate to the image window and right click to select a line.  Press escape to deselect.  Close the window to continue.")
+	figure = show_current_state(warped_image, point_sets, title="Right-click to select the transgressor")
+	scatter = plt.scatter([], [], c="#000000", marker="x")
+
+	# listen for the user right clicking on the image
+	selected_index: Optional[int] = None
+
+	def on_click(event):
+		nonlocal selected_index
+		if event.button == MouseButton.RIGHT:
+			selected_index = None
+			nearest_distance = inf
+			for index, point_set in enumerate(point_sets):
+				distance = hypot(
+					event.xdata - point_set.points[:, 0],
+					event.ydata - point_set.points[:, 1]).min()
+				if distance < nearest_distance:
+					nearest_distance = distance
+					selected_index = index
+			if selected_index is not None:
+				scatter.set_offsets(point_sets[selected_index].points)
+			figure.canvas.draw()
+
+	def on_key(event):
+		nonlocal selected_index
+		if event.key == "escape":
+			selected_index = None
+			scatter.set_offsets(empty((0, 2)))
+			figure.canvas.draw()
+
+	figure.canvas.mpl_connect("button_press_event", on_click)
+	figure.canvas.mpl_connect("key_press_event", on_key)
+
+	# wait for the user to close the window
 	plt.show()
 
-	# remove the selected points
+	# remove the selected points from the main list
+	if selected_index is not None:
+		point_sets.pop(selected_index)
+		print("Successfully removed a line!")
 	return point_sets
 
 
@@ -137,9 +174,11 @@ def show_current_state(warped_image: NDArray, point_sets: List[PointSet], title:
 	plt.imshow(faded_warped_image, extent=(0, shape(warped_image)[1], 0, shape(warped_image)[0]))
 	# plot the point sets
 	for index, point_set in enumerate(point_sets):
-		if cos(point_set.angle) == 0:
+		if point_set.angle is None:
+			color = "#3f3f3f"  # ambiguus lines are gray
+		elif abs(cos(point_set.angle)) < 1e-15:
 			color = "#7f0000"  # vertical lines are red
-		elif sin(point_set.angle) == "h":
+		elif abs(sin(point_set.angle)) < 1e-15:
 			color = "#00007f"  # horizontal lines are blue
 		elif sin(point_set.angle) > 0:
 			color = "#007f00"  # downward-sloping lines are green
