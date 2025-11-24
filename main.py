@@ -1,6 +1,7 @@
+import json
 import sys
 from os import path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Any, Dict
 
 import matplotlib.pyplot as plt
 import matplotlib.image as img
@@ -196,11 +197,23 @@ def show_current_state(warped_image: NDArray, point_sets: List[PointSet], title:
 
 
 def load_point_sets(filename: str) -> List[PointSet]:
-	return []
+	try:
+		with open(filename + " reference points.json", "r") as file:
+			data = json.load(file)
+	except FileNotFoundError:
+		return []
+	point_sets = []
+	for datum in data:
+		point_sets.append(PointSet(datum["angle"], datum["offset"], array(datum["points"])))
+	return point_sets
 
 
 def save_point_sets(filename: str, point_sets: List[PointSet]) -> None:
-	pass
+	data: List[Dict[str, Any]] = []
+	for point_set in point_sets:
+		data.append({"angle": point_set.angle, "offset": point_set.offset, "points": point_set.points.tolist()})
+	with open(filename + " reference points.json", "w") as file:
+		json.dump(data, file, indent="\t")
 
 
 def dewarp(warped_image: NDArray, point_sets: List[PointSet]) -> NDArray:
