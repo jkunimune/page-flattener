@@ -20,7 +20,7 @@ def dewarp(image_warped: NDArray, point_sets_warped: List[PointSet]) -> Tuple[ND
 	y_node_warped = linspace(0, num_y, round(num_y/cell_size) + 1)
 
 	# do the optimization to define the flattening spline
-	print("solving for the optimal transformation...")
+	print("Solving for the optimal transformation...")
 	x_node_flattened, y_node_flattened = meshgrid(x_node_warped, y_node_warped, indexing="xy")
 	x_node_flattened += random.normal(0, 100, shape(x_node_flattened))
 	y_node_flattened += random.normal(0, 100, shape(y_node_flattened))
@@ -37,11 +37,11 @@ def dewarp(image_warped: NDArray, point_sets_warped: List[PointSet]) -> Tuple[ND
 		point_sets_flattened.append(PointSet(point_set.angle, point_set.offset, points_flattened))
 
 	# recover the original image
-	print("inverting the optimal transformation...")
+	print("Inverting the optimal transformation...")
 	x_pixel_flat, y_pixel_flat = meshgrid(0.5 + arange(num_x), 0.5 + arange(num_y), indexing="xy")
 	x_pixel_warp, y_pixel_warp = inverse_spline_interpolate(
 		x_pixel_flat, y_pixel_flat, x_spline, y_spline)
-	print("applying the inverse transformation to the image...")
+	print("Applying the inverse transformation to the image...")
 	image_flattened = stack([
 		RegularGridInterpolator(
 			(arange(num_x), arange(num_y)), transpose(image_warped[:, :, k]),
@@ -50,7 +50,7 @@ def dewarp(image_warped: NDArray, point_sets_warped: List[PointSet]) -> Tuple[ND
 		for k in range(num_channels)
 	], axis=2).astype(image_warped.dtype, casting="unsafe")
 
-	print("done!")
+	print("Got it!")
 	return image_flattened, point_sets_flattened
 
 
@@ -75,14 +75,14 @@ def spline_interpolate(x_input: NDArray, y_input: NDArray, spline: Spline) -> ND
 	])
 	z_node = spline.z_node
 	z_node = concatenate([
-		expand_dims(z_node[0, :], axis=0),
+		expand_dims(2*z_node[0, :] - z_node[1, :], axis=0),
 		z_node,
-		expand_dims(z_node[-1, :], axis=0),
+		expand_dims(2*z_node[-1, :] - z_node[-2, :], axis=0),
 	], axis=0)
 	z_node = concatenate([
-		expand_dims(z_node[:, 0], axis=1),
+		expand_dims(2*z_node[:, 0] - z_node[:, 1], axis=1),
 		z_node,
-		expand_dims(z_node[:, -1], axis=1),
+		expand_dims(2*z_node[:, -1] - z_node[:, -2], axis=1),
 	], axis=1)
 
 	# find out in what cell each input point is
