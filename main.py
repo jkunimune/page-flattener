@@ -1,5 +1,6 @@
 import json
 import sys
+import traceback
 from os import path
 from typing import List, Optional, Tuple, Any, Dict
 
@@ -10,12 +11,7 @@ from matplotlib.figure import Figure
 from numpy import shape, array, radians, pi, sin, cos, mean, hypot, inf, empty
 from numpy.typing import NDArray
 
-
-class PointSet:
-	def __init__(self, angle: Optional[float], offset: Optional[float], points: NDArray):
-		self.angle = angle
-		self.offset = offset
-		self.points = points
+from dewarp import PointSet, dewarp
 
 
 def main(filename: str) -> None:
@@ -38,8 +34,8 @@ def main(filename: str) -> None:
 				point_sets = remove_points(warped_image, point_sets)
 				save_point_sets(filename, point_sets)
 			elif command.startswith("d") or command == "w":
-				flat_image = dewarp(warped_image, point_sets)
-				show_final_image(filename, flat_image)
+				flat_image, transformed_point_sets = dewarp(warped_image, point_sets)
+				show_current_state(flat_image, transformed_point_sets)
 				name, extension = path.splitext(filename)
 				flat_filename = name + " - flat" + path.extsep + extension
 				img.imsave(flat_filename, flat_image)
@@ -51,7 +47,7 @@ def main(filename: str) -> None:
 			else:
 				raise ValueError("I don't recognize that command.  use one of the commands from the list I just gave you, please.")
 		except Exception as e:
-			print(e)
+			traceback.print_exception(e)
 
 
 def add_points(kind: str, warped_image: NDArray, point_sets: List[PointSet]) -> List[PointSet]:
@@ -88,7 +84,7 @@ def add_points(kind: str, warped_image: NDArray, point_sets: List[PointSet]) -> 
 
 	# plot the image and current points
 	print("Navigate to the image window and right click to add points.  Press backspace to delete points.  Close the window to continue.")
-	figure = show_current_state(warped_image, point_sets, title="Right-click to add points")
+	figure = show_current_state(warped_image, point_sets, title="Right-click to add points, then close")
 	scatter = plt.scatter([], [], c="#000000", marker=".")
 
 	# listen for the user right clicking on the image
@@ -125,7 +121,7 @@ def add_points(kind: str, warped_image: NDArray, point_sets: List[PointSet]) -> 
 def remove_points(warped_image: NDArray, point_sets: List[PointSet]) -> List[PointSet]:
 	# plot the image and current points, and wait for the user to close the window
 	print("Navigate to the image window and right click to select a line.  Press escape to deselect.  Close the window to continue.")
-	figure = show_current_state(warped_image, point_sets, title="Right-click to select the transgressor")
+	figure = show_current_state(warped_image, point_sets, title="Right-click to select the transgressor, then close")
 	scatter = plt.scatter([], [], c="#000000", marker="x")
 
 	# listen for the user right clicking on the image
@@ -177,7 +173,7 @@ def show_current_state(warped_image: NDArray, point_sets: List[PointSet], title:
 	# plot the point sets
 	for index, point_set in enumerate(point_sets):
 		if point_set.angle is None:
-			color = "#3f3f3f"  # ambiguus lines are gray
+			color = "#007f00"  # ambiguus lines are green
 		elif abs(cos(point_set.angle)) < 1e-15:
 			color = "#7f0000"  # vertical lines are red
 		elif abs(sin(point_set.angle)) < 1e-15:
@@ -214,17 +210,6 @@ def save_point_sets(filename: str, point_sets: List[PointSet]) -> None:
 		data.append({"angle": point_set.angle, "offset": point_set.offset, "points": point_set.points.tolist()})
 	with open(filename + " reference points.json", "w") as file:
 		json.dump(data, file, indent="\t")
-
-
-def dewarp(warped_image: NDArray, point_sets: List[PointSet]) -> NDArray:
-	return warped_image[::-1, ::-1, :]
-
-
-def show_final_image(filename: str, flat_image: NDArray) -> Figure:
-	figure = plt.figure()
-	plt.imshow(flat_image, extent=(0, shape(flat_image)[1], 0, shape(flat_image)[0]))
-	plt.tight_layout()
-	return figure
 
 
 if __name__ == "__main__":
