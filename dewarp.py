@@ -6,7 +6,8 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
-from numpy import shape, linspace, sqrt, meshgrid, random, where, zeros, stack, arange, transpose
+from numpy import shape, linspace, sqrt, meshgrid, random, where, zeros, stack, arange, transpose, concatenate, array, \
+	expand_dims, minimum, maximum, ceil
 from numpy.typing import NDArray
 from scipy.interpolate import RegularGridInterpolator
 
@@ -60,18 +61,43 @@ def inverse_spline_interpolate(x_desired: NDArray, y_desired: NDArray, x_spline:
 def spline_interpolate(x_input: NDArray, y_input: NDArray, spline: Spline) -> NDArray:
 	""" x_input and y_input must be evenly spaced! """
 	assert shape(x_input) == shape(y_input)
-	i_input = (y_input - spline.y_node[0])/(spline.y_node[1] - spline.y_node[0])
-	j_input = (x_input - spline.x_node[0])/(spline.x_node[1] - spline.x_node[0])
+
+	# add random garbage to the outer edges to make the edges behave better
+	x_node = concatenate([
+		array([2*spline.x_node[0] - spline.x_node[1]]),
+		spline.x_node,
+		array([2*spline.x_node[-1] - spline.x_node[-2]]),
+	])
+	y_node = concatenate([
+		array([2*spline.y_node[0] - spline.y_node[1]]),
+		spline.y_node,
+		array([2*spline.y_node[-1] - spline.y_node[-2]]),
+	])
+	z_node = spline.z_node
+	z_node = concatenate([
+		expand_dims(z_node[0, :], axis=0),
+		z_node,
+		expand_dims(z_node[-1, :], axis=0),
+	], axis=0)
+	z_node = concatenate([
+		expand_dims(z_node[:, 0], axis=1),
+		z_node,
+		expand_dims(z_node[:, -1], axis=1),
+	], axis=1)
+
+	# find out in what cell each input point is
+	i_input = (y_input - y_node[0])/(y_node[1] - y_node[0])
+	j_input = (x_input - x_node[0])/(x_node[1] - x_node[0])
+	I_input = maximum(2, minimum(y_node.size - 2, ceil(i_input).astype(int)))
+	J_input = maximum(2, minimum(x_node.size - 2, ceil(j_input).astype(int)))
+
+	# apply the 4×4 convolution kernel
 	result = zeros(shape(x_input) + shape(spline.z_node)[2:])
-	row_weits = []
-	for i_node in range(spline.y_node.size):
-		row_weits.append(bicubic_function(i_input - i_node))
-	collum_weits = []
-	for j_node in range(spline.x_node.size):
-		collum_weits.append(bicubic_function(j_input - j_node))
-	for i_node in range(spline.y_node.size):
-		for j_node in range(spline.x_node.size):
-			result = result + row_weits[i_node]*collum_weits[j_node]*spline.z_node[i_node, j_node, ...]
+	row_weits = {Δi: bicubic_function(i_input - (I_input + Δi)) for Δi in range(-2, 2)}
+	col_weits = {Δj: bicubic_function(j_input - (J_input + Δj)) for Δj in range(-2, 2)}
+	for Δi in range(-2, 2):
+		for Δj in range(-2, 2):
+			result = result + row_weits[Δi]*col_weits[Δj]*z_node[I_input + Δi, J_input + Δj, ...]
 	return result
 
 
