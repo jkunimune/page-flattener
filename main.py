@@ -169,7 +169,7 @@ def show_current_state(warped_image: NDArray, point_sets: List[PointSet], title:
 	figure = plt.figure()
 	# plot the image
 	faded_warped_image = 128 + warped_image//2
-	plt.imshow(faded_warped_image, extent=(0, shape(warped_image)[1], 0, shape(warped_image)[0]))
+	plt.imshow(faded_warped_image, extent=(0, shape(warped_image)[1], shape(warped_image)[0], 0))
 	# plot the point sets
 	for index, point_set in enumerate(point_sets):
 		if point_set.angle is None:
