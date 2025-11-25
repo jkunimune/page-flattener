@@ -8,12 +8,16 @@ from typing import List, Optional, Tuple, Union
 
 import torch
 from numpy import shape, linspace, sqrt, meshgrid, stack, arange, transpose, concatenate, array, \
-	ravel, size, newaxis
+	ravel, size, newaxis, empty_like
 from numpy.typing import NDArray
 from scipy import optimize
 from scipy.interpolate import RegularGridInterpolator
 from torch import Tensor
 from torch.autograd.functional import jacobian
+
+
+NUM_OPTIMIZATION_ITERATIONS = 10
+NUM_INVERSION_ITERATIONS = 10
 
 
 def dewarp(image_warped: NDArray, point_sets_warped: List[PointSet]) -> Tuple[NDArray, List[PointSet]]:
@@ -100,7 +104,7 @@ def optimize_spline_nodes(width: int, height: int, point_sets: List[PointSet]) -
 		fun=lambda x: residuals_function(x).numpy(),
 		jac=residuals_gradient,
 		x0=initial_state,
-		max_nfev=10,
+		max_nfev=NUM_OPTIMIZATION_ITERATIONS,
 	)
 	print(optimization.message)
 
@@ -112,7 +116,41 @@ def optimize_spline_nodes(width: int, height: int, point_sets: List[PointSet]) -
 
 
 def apply_inverse_splines(x_desired: NDArray, y_desired: NDArray, x_spline: Spline, y_spline: Spline) -> Tuple[NDArray, NDArray]:
-	return x_desired, y_desired
+	x_optimal = empty_like(x_desired)
+	y_optimal = empty_like(y_desired)
+	for i in range(shape(x_optimal)[0]):
+		print(f"{i}/{shape(x_optimal)[0]}")
+		for j in range(shape(x_optimal)[1]):
+
+			# assume the identity transformation for the initial gess
+			x_initial = x_desired[i, j]
+			y_initial = y_desired[i, j]
+
+			# define the residuals function
+			def residuals_function(state):
+				x_input = state[0]
+				y_input = state[1]
+				x_output = apply_spline(x_input, y_input, x_spline)
+				y_output = apply_spline(x_input, y_input, y_spline)
+				return torch.stack([x_output - x_desired[i, j], y_output - y_desired[i, j]])
+
+			# autodifferentiate it
+			def residuals_gradient(state):
+				inputs = torch.tensor(state, requires_grad=True)
+				return jacobian(residuals_function, inputs)
+
+			# run the least squares algorithm
+			optimization = optimize.least_squares(
+				fun=lambda x: residuals_function(x).numpy(),
+				jac=residuals_gradient,
+				x0=stack([x_initial, y_initial]),
+				max_nfev=NUM_INVERSION_ITERATIONS,
+			)
+
+			# add it to the array
+			x_optimal[i, j] = optimization.x[0]
+			y_optimal[i, j] = optimization.x[1]
+	return x_optimal, y_optimal
 
 
 def apply_spline(x_input: Union[NDArray, Tensor], y_input: Union[NDArray, Tensor], spline: Spline) -> Tensor:
