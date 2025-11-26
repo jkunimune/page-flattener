@@ -141,8 +141,8 @@ def apply_inverse_splines(x_desired: NDArray, y_desired: NDArray, x_spline: Spli
 		steps = (-linalg.inv(jacobians)@residuals[..., newaxis])[..., 0]
 		states += steps
 
-	x_optimal = states[..., 0, 0]
-	y_optimal = states[..., 1, 0]
+	x_optimal = states[..., 0]
+	y_optimal = states[..., 1]
 	return x_optimal, y_optimal
 
 
