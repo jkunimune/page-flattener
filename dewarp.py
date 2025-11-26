@@ -130,21 +130,28 @@ def apply_inverse_splines(x_desired: NDArray, y_desired: NDArray, x_spline: Spli
 	targets = stack([x_desired, y_desired], axis=-1)
 
 	for i in range(NUM_INVERSION_ITERATIONS):
+		# compute the error in each inverse point
 		results = stack([
 			apply_spline(states[..., 0], states[..., 1], x_spline).numpy(),
 			apply_spline(states[..., 0], states[..., 1], y_spline).numpy(),
 		], axis=-1)
 		residuals = results - targets
+		# compute the jacobian of that error
 		jacobians = stack([
 			spline_gradient(states[..., 0], states[..., 1], x_spline).numpy(),
 			spline_gradient(states[..., 0], states[..., 1], y_spline).numpy(),
 		], axis=-2)
+		# take a Newton-Raphson step
 		try:
 			steps = (-linalg.inv(jacobians)@residuals[..., newaxis])[..., 0]
 		except LinAlgError:
-			print("The inversion failed due to a point with no gradient!  This probably means the spline went and did something crazy.")
+			print("The inversion failed due to a point with no gradient!  That shouldn't happen…")
 			return states[..., 0], states[..., 1]
 		states += steps
+		# coerce it back in bounds
+		δ = 0.01*(x_spline.x_node[1] - x_spline.x_node[0] + x_spline.y_node[1] - x_spline.y_node[0])/2
+		states[..., 0] = clip(states[..., 0], x_spline.x_node[1] - δ, x_spline.x_node[-2] + δ)
+		states[..., 1] = clip(states[..., 1], x_spline.y_node[1] - δ, x_spline.y_node[-2] + δ)
 
 	return states[..., 0], states[..., 1]
 
