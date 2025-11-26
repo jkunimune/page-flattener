@@ -9,7 +9,7 @@ from typing import List, Optional, Tuple, Union
 import torch
 from PIL import Image
 from numpy import shape, linspace, sqrt, meshgrid, stack, arange, transpose, concatenate, array, \
-	ravel, size, newaxis, linalg, clip, ceil, where
+	ravel, size, newaxis, linalg, clip, ceil, where, sign
 from numpy.linalg import LinAlgError
 from numpy.typing import NDArray
 from scipy import optimize
@@ -202,7 +202,7 @@ def bicubic_function(Δi: NDArray, a=-0.5) -> NDArray:
 
 def bicubic_function_derivative(Δi, a=-0.5):
 	x = abs(Δi)
-	return where(
+	return sign(Δi)*where(
 		x <= 1,
 		3*(a + 2)*x**2 - 2*(a + 3)*x,
 		where(
