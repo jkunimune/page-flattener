@@ -10,6 +10,7 @@ import torch
 from PIL import Image
 from numpy import shape, linspace, sqrt, meshgrid, stack, arange, transpose, concatenate, array, \
 	ravel, size, newaxis, linalg, clip, ceil, where
+from numpy.linalg import LinAlgError
 from numpy.typing import NDArray
 from scipy import optimize
 from scipy.interpolate import RegularGridInterpolator
@@ -138,12 +139,14 @@ def apply_inverse_splines(x_desired: NDArray, y_desired: NDArray, x_spline: Spli
 			spline_gradient(states[..., 0], states[..., 1], x_spline).numpy(),
 			spline_gradient(states[..., 0], states[..., 1], y_spline).numpy(),
 		], axis=-2)
-		steps = (-linalg.inv(jacobians)@residuals[..., newaxis])[..., 0]
+		try:
+			steps = (-linalg.inv(jacobians)@residuals[..., newaxis])[..., 0]
+		except LinAlgError:
+			print("The inversion failed due to a point with no gradient!  This probably means the spline went and did something crazy.")
+			return states[..., 0], states[..., 1]
 		states += steps
 
-	x_optimal = states[..., 0]
-	y_optimal = states[..., 1]
-	return x_optimal, y_optimal
+	return states[..., 0], states[..., 1]
 
 
 def apply_spline(x_input: NDArray, y_input: NDArray, spline: Spline) -> Tensor:
