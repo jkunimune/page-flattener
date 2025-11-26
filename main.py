@@ -37,7 +37,7 @@ def main(filename: str) -> None:
 				flat_image, transformed_point_sets = dewarp(warped_image, point_sets)
 				show_current_state(flat_image, transformed_point_sets)
 				name, extension = path.splitext(filename)
-				flat_filename = name + " - flat" + path.extsep + extension
+				flat_filename = name + " - flat" + extension
 				img.imsave(flat_filename, flat_image)
 				print(f"Saved the dewarped image to `{name + ' - flat' + path.extsep + extension}`!")
 				plt.show()
