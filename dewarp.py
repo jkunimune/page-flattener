@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import List, Optional, Tuple, Union
 
 import torch
+from PIL import Image
 from numpy import shape, linspace, sqrt, meshgrid, stack, arange, transpose, concatenate, array, \
 	ravel, size, newaxis, linalg, clip, ceil, where
 from numpy.typing import NDArray
@@ -39,8 +40,16 @@ def dewarp(image_warped: NDArray, point_sets_warped: List[PointSet]) -> Tuple[ND
 	# recover the original image
 	print("Inverting the optimal transformation...")
 	x_pixel_flat, y_pixel_flat = meshgrid(0.5 + arange(num_x), 0.5 + arange(num_y), indexing="xy")
-	x_pixel_warp, y_pixel_warp = apply_inverse_splines(
-		x_pixel_flat, y_pixel_flat, x_spline, y_spline)
+	cell_size = (x_spline.x_node[1] - x_spline.x_node[0] + x_spline.y_node[1] - y_spline.y_node[0])/2
+	macropixel_size = max(1, cell_size/10)
+	full_shape = (num_x, num_y)  # these shapes are xy indexing because they're going into PIL; everything else is yx indexing
+	reduced_shape = (round(num_x/macropixel_size), round(num_y/macropixel_size))
+	x_macropixel_flat = array(Image.fromarray(x_pixel_flat).resize(reduced_shape))
+	y_macropixel_flat = array(Image.fromarray(y_pixel_flat).resize(reduced_shape))
+	x_macropixel_warp, y_macropixel_warp = apply_inverse_splines(
+		x_macropixel_flat, y_macropixel_flat, x_spline, y_spline)
+	x_pixel_warp = array(Image.fromarray(x_macropixel_warp).resize(full_shape))
+	y_pixel_warp = array(Image.fromarray(y_macropixel_warp).resize(full_shape))
 	print("Applying the inverse transformation to the image...")
 	image_flattened = stack([
 		RegularGridInterpolator(
