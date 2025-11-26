@@ -191,6 +191,9 @@ def spline_gradient(x_input: NDArray, y_input: NDArray, spline: Spline) -> Tenso
 		for Δj in range(-2, 2):
 			x_gradients += row_weits[Δi]*col_slopes[Δj]*spline.z_node[i_node + Δi, j_node + Δj, ...]
 			y_gradients += row_slopes[Δi]*col_weits[Δj]*spline.z_node[i_node + Δi, j_node + Δj, ...]
+	# don't forget to scale to correct for the change of coordinates earlier in this function
+	x_gradients /= (spline.x_node[1] - spline.x_node[0])
+	y_gradients /= (spline.y_node[1] - spline.y_node[0])
 	return torch.stack([x_gradients, y_gradients], dim=-1)
 
 
