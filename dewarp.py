@@ -9,7 +9,7 @@ from typing import List, Optional, Tuple, Union
 import torch
 from PIL import Image
 from numpy import shape, linspace, sqrt, meshgrid, stack, arange, transpose, concatenate, array, \
-	ravel, size, newaxis, linalg, clip, ceil, where, sign, hypot
+	ravel, size, newaxis, linalg, clip, ceil, where, sign
 from numpy.linalg import LinAlgError
 from numpy.typing import NDArray
 from scipy import optimize
@@ -23,12 +23,12 @@ NUM_INVERSION_ITERATIONS = 10
 REGULARIZATION_FACTOR = 10
 
 
-def dewarp(image_warped: NDArray, point_sets_warped: List[PointSet]) -> Tuple[NDArray, List[PointSet]]:
+def dewarp(image_warped: NDArray, point_sets_warped: List[PointSet], resolution: float) -> Tuple[NDArray, List[PointSet]]:
 	num_y, num_x, num_channels = shape(image_warped)
 
 	# do the optimization to define the flattening spline
 	print("Solving for the optimal transformation...")
-	x_spline, y_spline = optimize_spline_nodes(num_x, num_y, point_sets_warped)
+	x_spline, y_spline = optimize_spline_nodes(num_x, num_y, point_sets_warped, resolution)
 
 	# recover the straightened point sets
 	point_sets_flattened = []
@@ -65,9 +65,9 @@ def dewarp(image_warped: NDArray, point_sets_warped: List[PointSet]) -> Tuple[ND
 	return image_flattened, point_sets_flattened
 
 
-def optimize_spline_nodes(width: int, height: int, point_sets: List[PointSet]) -> Tuple[Spline, Spline]:
+def optimize_spline_nodes(width: int, height: int, point_sets: List[PointSet], resolution: float) -> Tuple[Spline, Spline]:
 	# define the mesh grid that will be used to define the transformation
-	cell_size = sqrt(width*height)/10
+	cell_size = sqrt(width*height)/resolution
 	x_node_warped = linspace(0, width, round(width/cell_size) + 1)
 	y_node_warped = linspace(0, height, round(height/cell_size) + 1)
 
@@ -124,7 +124,7 @@ def optimize_spline_nodes(width: int, height: int, point_sets: List[PointSet]) -
 	# pick a suitable value for the regularization weight
 	regularization_weight = 0
 	error_scale = sqrt((residuals_function(initial_state).numpy()**2).sum())
-	curvature_scale = hypot(width, height)
+	curvature_scale = cell_size
 	regularization_weight = REGULARIZATION_FACTOR*error_scale/curvature_scale
 
 	# run the least squares algorithm

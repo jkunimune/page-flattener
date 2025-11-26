@@ -34,8 +34,7 @@ def main(filename: str) -> None:
 				point_sets = remove_points(warped_image, point_sets)
 				save_point_sets(filename, point_sets)
 			elif command.startswith("d") or command == "w":
-				flat_image, transformed_point_sets = dewarp(warped_image, point_sets)
-				show_current_state(flat_image, transformed_point_sets)
+				flat_image = dewarp_image(warped_image, point_sets)
 				name, extension = path.splitext(filename)
 				flat_filename = name + " - flat" + extension
 				img.imsave(flat_filename, flat_image)
@@ -163,6 +162,20 @@ def remove_points(warped_image: NDArray, point_sets: List[PointSet]) -> List[Poi
 	else:
 		print("Declined to remove a line.")
 	return point_sets
+
+
+def dewarp_image(warped_image: NDArray, point_sets: List[PointSet]) -> NDArray:
+	response = input("How many spline segments would you like to use for the dewarping? (lower is faster; higher is more precise)\n"
+	                 "> ")
+	if len(response) == 0:
+		resolution = 10
+	else:
+		resolution = float(response)
+	if resolution < 1 or resolution > 100:
+		raise ValueError("That resolution is ridiculous.  Pick a different one.")
+	flat_image, transformed_point_sets = dewarp(warped_image, point_sets, resolution)
+	show_current_state(flat_image, transformed_point_sets)
+	return flat_image
 
 
 def show_current_state(warped_image: NDArray, point_sets: List[PointSet], title: str = None) -> Figure:
