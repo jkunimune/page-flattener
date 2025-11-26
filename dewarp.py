@@ -8,7 +8,7 @@ from typing import List, Optional, Tuple, Union
 
 import torch
 from numpy import shape, linspace, sqrt, meshgrid, stack, arange, transpose, concatenate, array, \
-	ravel, size, newaxis, empty_like
+	ravel, size, newaxis, linalg, clip, ceil, where
 from numpy.typing import NDArray
 from scipy import optimize
 from scipy.interpolate import RegularGridInterpolator
@@ -116,94 +116,71 @@ def optimize_spline_nodes(width: int, height: int, point_sets: List[PointSet]) -
 
 
 def apply_inverse_splines(x_desired: NDArray, y_desired: NDArray, x_spline: Spline, y_spline: Spline) -> Tuple[NDArray, NDArray]:
-	x_optimal = empty_like(x_desired)
-	y_optimal = empty_like(y_desired)
-	for i in range(shape(x_optimal)[0]):
-		print(f"{i}/{shape(x_optimal)[0]}")
-		for j in range(shape(x_optimal)[1]):
+	states = stack([x_desired, y_desired], axis=-1)  # for the initial gess, assume the spline is the identity transform
+	targets = stack([x_desired, y_desired], axis=-1)
 
-			# assume the identity transformation for the initial gess
-			x_initial = x_desired[i, j]
-			y_initial = y_desired[i, j]
+	for i in range(NUM_INVERSION_ITERATIONS):
+		results = stack([
+			apply_spline(states[..., 0], states[..., 1], x_spline).numpy(),
+			apply_spline(states[..., 0], states[..., 1], y_spline).numpy(),
+		], axis=-1)
+		residuals = results - targets
+		jacobians = stack([
+			spline_gradient(states[..., 0], states[..., 1], x_spline).numpy(),
+			spline_gradient(states[..., 0], states[..., 1], y_spline).numpy(),
+		], axis=-2)
+		steps = (-linalg.inv(jacobians)@residuals[..., newaxis])[..., 0]
+		states += steps
 
-			# define the residuals function
-			def residuals_function(state):
-				x_input = state[0]
-				y_input = state[1]
-				x_output = apply_spline(x_input, y_input, x_spline)
-				y_output = apply_spline(x_input, y_input, y_spline)
-				return torch.stack([x_output - x_desired[i, j], y_output - y_desired[i, j]])
-
-			# autodifferentiate it
-			def residuals_gradient(state):
-				inputs = torch.tensor(state, requires_grad=True)
-				return jacobian(residuals_function, inputs)
-
-			# run the least squares algorithm
-			optimization = optimize.least_squares(
-				fun=lambda x: residuals_function(x).numpy(),
-				jac=residuals_gradient,
-				x0=stack([x_initial, y_initial]),
-				max_nfev=NUM_INVERSION_ITERATIONS,
-			)
-
-			# add it to the array
-			x_optimal[i, j] = optimization.x[0]
-			y_optimal[i, j] = optimization.x[1]
+	x_optimal = states[..., 0, 0]
+	y_optimal = states[..., 1, 0]
 	return x_optimal, y_optimal
 
 
-def apply_spline(x_input: Union[NDArray, Tensor], y_input: Union[NDArray, Tensor], spline: Spline) -> Tensor:
+def apply_spline(x_input: NDArray, y_input: NDArray, spline: Spline) -> Tensor:
 	""" x_input and y_input must be evenly spaced! """
 	assert shape(x_input) == shape(y_input)
 
-	# add random garbage to the outer edges to make the edges behave better
-	x_node = concatenate([
-		array([2*spline.x_node[0] - spline.x_node[1]]),
-		spline.x_node,
-		array([2*spline.x_node[-1] - spline.x_node[-2]]),
-	])
-	y_node = concatenate([
-		array([2*spline.y_node[0] - spline.y_node[1]]),
-		spline.y_node,
-		array([2*spline.y_node[-1] - spline.y_node[-2]]),
-	])
-	z_node = torch.as_tensor(spline.z_node)
-	z_node = torch.concatenate([
-		(2*z_node[0, :] - z_node[1, :])[newaxis, :],
-		z_node,
-		(2*z_node[-1, :] - z_node[-2, :])[newaxis, :],
-	], dim=0)
-	z_node = torch.concatenate([
-		(2*z_node[:, 0] - z_node[:, 1])[:, newaxis],
-		z_node,
-		(2*z_node[:, -1] - z_node[:, -2])[:, newaxis],
-	], dim=1)
-
 	# find out in what cell each input point is
-	x_input = torch.as_tensor(x_input)
-	y_input = torch.as_tensor(y_input)
-	i_input = (y_input - y_node[0])/(y_node[1] - y_node[0])
-	j_input = (x_input - x_node[0])/(x_node[1] - x_node[0])
-	I_input = torch.clamp(torch.ceil(i_input).int(), 2, size(y_node) - 2)
-	J_input = torch.clamp(torch.ceil(j_input).int(), 2, size(x_node) - 2)
+	i_node, di_input = digitize(y_input, spline.y_node)
+	j_node, dj_input = digitize(x_input, spline.x_node)
 
 	# apply the 4×4 convolution kernel
 	result = torch.zeros(shape(x_input) + shape(spline.z_node)[2:])
-	row_weits = {Δi: bicubic_function(i_input - (I_input + Δi)) for Δi in range(-2, 2)}
-	col_weits = {Δj: bicubic_function(j_input - (J_input + Δj)) for Δj in range(-2, 2)}
+	row_weits = {Δi: bicubic_function(di_input - Δi) for Δi in range(-2, 2)}
+	col_weits = {Δj: bicubic_function(dj_input - Δj) for Δj in range(-2, 2)}
 	for Δi in range(-2, 2):
 		for Δj in range(-2, 2):
-			result = result + row_weits[Δi]*col_weits[Δj]*z_node[I_input + Δi, J_input + Δj, ...]
+			weight = torch.as_tensor(row_weits[Δi]*col_weits[Δj])
+			result += weight*spline.z_node[i_node + Δi, j_node + Δj, ...]
 	return result
 
 
-def bicubic_function(Δi, a=-0.5):
+def spline_gradient(x_input: NDArray, y_input: NDArray, spline: Spline) -> Tensor:
+	# find out in what cell each input point is
+	i_node, di_input = digitize(y_input, spline.y_node)
+	j_node, dj_input = digitize(x_input, spline.x_node)
+
+	# apply the 4×4 differentiated convolution kernel
+	x_gradients = torch.zeros(shape(x_input) + shape(spline.z_node)[2:])
+	y_gradients = torch.zeros(shape(x_input) + shape(spline.z_node)[2:])
+	row_weits = {Δi: bicubic_function(di_input - Δi) for Δi in range(-2, 2)}
+	col_weits = {Δj: bicubic_function(dj_input - Δj) for Δj in range(-2, 2)}
+	row_slopes = {Δi: bicubic_function_derivative(di_input - Δi) for Δi in range(-2, 2)}
+	col_slopes = {Δj: bicubic_function_derivative(dj_input - Δj) for Δj in range(-2, 2)}
+	for Δi in range(-2, 2):
+		for Δj in range(-2, 2):
+			x_gradients += row_weits[Δi]*col_slopes[Δj]*spline.z_node[i_node + Δi, j_node + Δj, ...]
+			y_gradients += row_slopes[Δi]*col_weits[Δj]*spline.z_node[i_node + Δi, j_node + Δj, ...]
+	return torch.stack([x_gradients, y_gradients], dim=-1)
+
+
+def bicubic_function(Δi: NDArray, a=-0.5) -> NDArray:
 	x = abs(Δi)
-	return torch.where(
+	return where(
 		x <= 1,
 		(a + 2)*x**3 - (a + 3)*x**2 + 1,
-		torch.where(
+		where(
 			x < 2,
 			a*x**3 - 5*a*x**2 + 8*a*x - 4*a,
 			0,
@@ -211,10 +188,56 @@ def bicubic_function(Δi, a=-0.5):
 	)
 
 
+def bicubic_function_derivative(Δi, a=-0.5):
+	x = abs(Δi)
+	return where(
+		x <= 1,
+		3*(a + 2)*x**2 - 2*(a + 3)*x,
+		where(
+			x < 2,
+			3*a*x**2 - 10*a*x + 8*a,
+			0,
+		),
+	)
+
+
+def digitize(x, bins) -> Tuple[NDArray, NDArray]:
+	"""
+	fit the given value into a bin that can be used to spline interpolate it
+	:return: the index of one of the bin nodes and the distance between this point's true index and that node's index
+	"""
+	i = (x - bins[0])/(bins[1] - bins[0])
+	i_bin = clip(ceil(i).astype(int), 2, size(bins) - 2)
+	return i_bin, i - i_bin
+
+
 class Spline:
-	def __init__(self, input_x: NDArray, input_y: NDArray, z_node: Union[NDArray, Tensor]):
-		self.x_node = input_x
-		self.y_node = input_y
+	def __init__(self, x_node: NDArray, y_node: NDArray, z_node: Union[NDArray, Tensor]):
+		# add random garbage to the outer edges to make the edges behave better
+		x_node = concatenate([
+			array([2*x_node[0] - x_node[1]]),
+			x_node,
+			array([2*x_node[-1] - x_node[-2]]),
+		])
+		y_node = concatenate([
+			array([2*y_node[0] - y_node[1]]),
+			y_node,
+			array([2*y_node[-1] - y_node[-2]]),
+		])
+		z_node = torch.as_tensor(z_node)
+		z_node = torch.concatenate([
+			(2*z_node[0, :] - z_node[1, :])[newaxis, :],
+			z_node,
+			(2*z_node[-1, :] - z_node[-2, :])[newaxis, :],
+		], dim=0)
+		z_node = torch.concatenate([
+			(2*z_node[:, 0] - z_node[:, 1])[:, newaxis],
+			z_node,
+			(2*z_node[:, -1] - z_node[:, -2])[:, newaxis],
+		], dim=1)
+
+		self.x_node = x_node
+		self.y_node = y_node
 		self.z_node = z_node
 
 
