@@ -9,7 +9,7 @@ from typing import List, Optional, Tuple, Union
 import torch
 from PIL import Image
 from numpy import shape, linspace, sqrt, meshgrid, stack, arange, transpose, concatenate, array, \
-	ravel, size, newaxis, linalg, clip, ceil, where, sign
+	ravel, size, newaxis, linalg, clip, ceil, where, sign, hypot
 from numpy.linalg import LinAlgError
 from numpy.typing import NDArray
 from scipy import optimize
@@ -18,8 +18,9 @@ from torch import Tensor
 from torch.autograd.functional import jacobian
 
 
-NUM_OPTIMIZATION_ITERATIONS = 10
+NUM_OPTIMIZATION_ITERATIONS = 100
 NUM_INVERSION_ITERATIONS = 10
+REGULARIZATION_FACTOR = 10
 
 
 def dewarp(image_warped: NDArray, point_sets_warped: List[PointSet]) -> Tuple[NDArray, List[PointSet]]:
@@ -102,12 +103,29 @@ def optimize_spline_nodes(width: int, height: int, point_sets: List[PointSet]) -
 			else:  # if the user didn't specify an offset, find the least squares offset
 				offset = torch.mean(values)
 			residual_vectors.append(values - offset)
+		# the laplacians at each point can also be treated as residuals for regularization purposes
+		if regularization_weight != 0:
+			i, j = meshgrid(
+				arange(1, size(x_spline.y_node) - 1),
+				arange(1, size(x_spline.x_node) - 1),
+				indexing="xy")
+			for spline in [x_spline, y_spline]:
+				curvature = spline.z_node[i, j] - (
+						spline.z_node[i - 1, j] + spline.z_node[i, j - 1] +
+						spline.z_node[i + 1, j] + spline.z_node[i, j + 1])/4
+				residual_vectors.append(torch.ravel(regularization_weight*curvature))
 		return torch.concatenate(residual_vectors)
 
 	# autodifferentiate it
 	def residuals_gradient(state):
 		inputs = torch.tensor(state, requires_grad=True)
-		return jacobian(residuals_function, inputs)
+		return jacobian(residuals_function, inputs).numpy()
+
+	# pick a suitable value for the regularization weight
+	regularization_weight = 0
+	error_scale = sqrt((residuals_function(initial_state).numpy()**2).sum())
+	curvature_scale = hypot(width, height)
+	regularization_weight = REGULARIZATION_FACTOR*error_scale/curvature_scale
 
 	# run the least squares algorithm
 	optimization = optimize.least_squares(
@@ -117,9 +135,10 @@ def optimize_spline_nodes(width: int, height: int, point_sets: List[PointSet]) -
 		max_nfev=NUM_OPTIMIZATION_ITERATIONS,
 	)
 	print(optimization.message)
+	optimal_state = optimization.x
 
 	# don't forget to convert from Tensor back to Numpy array before returning
-	x_spline, y_spline = unpack_state(optimization.x)
+	x_spline, y_spline = unpack_state(optimal_state)
 	x_spline.z_node = x_spline.z_node.numpy()
 	y_spline.z_node = y_spline.z_node.numpy()
 	return x_spline, y_spline
@@ -165,7 +184,7 @@ def apply_spline(x_input: NDArray, y_input: NDArray, spline: Spline) -> Tensor:
 	j_node, dj_input = digitize(x_input, spline.x_node)
 
 	# apply the 4×4 convolution kernel
-	result = torch.zeros(shape(x_input) + shape(spline.z_node)[2:])
+	result = torch.zeros(shape(x_input) + shape(spline.z_node)[2:], dtype=torch.float64)
 	row_weits = {Δi: bicubic_function(di_input - Δi) for Δi in range(-2, 2)}
 	col_weits = {Δj: bicubic_function(dj_input - Δj) for Δj in range(-2, 2)}
 	for Δi in range(-2, 2):
