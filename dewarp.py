@@ -95,7 +95,7 @@ def optimize_spline_nodes(width: int, height: int, point_sets: List[PointSet]) -
 			else:  # if the user didn't specify an angle, find the least squares angle
 				Δx = x - torch.mean(x)
 				Δy = y - torch.mean(y)
-				angle = torch.arctan2((2*Δx*Δy).sum(), (Δx**2 - Δy**2).sum())/2
+				angle = torch.arctan2((-2*Δx*Δy).sum(), (Δx**2 - Δy**2).sum())/2
 			values = x*torch.sin(angle) + y*torch.cos(angle)
 			offset = point_set.offset
 			if point_set.offset is not None:
