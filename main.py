@@ -11,7 +11,7 @@ from matplotlib.figure import Figure
 from numpy import shape, array, radians, pi, sin, cos, mean, hypot, inf, empty
 from numpy.typing import NDArray
 
-from dewarp import PointSet, dewarp
+from dewarp import PointSet, dewarp, Arc, Line
 
 
 def main(filename: str) -> None:
@@ -22,12 +22,13 @@ def main(filename: str) -> None:
 		                "  horizontal – draw a new horizontal line on the warped image\n"
 		                "  vertical – draw a new vertical line on the warped image\n"
 		                "  oblique – draw a new oblique line on the warped image\n"
+		                "  circle – draw a new circle on the warped image\n"
 		                "  remove – delete one of the lines previusly drawn on the warped image\n"
 		                "  dewarp – apply the dewarping algorithm\n"
 		                "  exit – give up like a baby loser\n"
 		                "> ")
 		try:
-			if command.startswith("h") or command.startswith("v") or command.startswith("o") or command == "l":
+			if command.startswith("h") or command.startswith("v") or command.startswith("o") or command == "l" or command.startswith("c") or command == "a":
 				point_sets = add_points(command, warped_image, point_sets)
 				save_point_sets(filename, point_sets)
 			elif command.startswith("r") or command == "-":
@@ -52,7 +53,6 @@ def main(filename: str) -> None:
 def add_points(kind: str, warped_image: NDArray, point_sets: List[PointSet]) -> List[PointSet]:
 	# query the user for the type of point set
 	if kind.startswith("h"):
-		angle = 0
 		response = input(f"Enter the line's y-value, if known, or press ENTER if not "
 		                 f"(0 is the top edge and {shape(warped_image)[0]} is the bottom edge)\n"
 		                 f"> ")
@@ -60,8 +60,8 @@ def add_points(kind: str, warped_image: NDArray, point_sets: List[PointSet]) -> 
 			offset = None
 		else:
 			offset = float(response)
+		target = Line(0, offset)
 	elif kind.startswith("v"):
-		angle = pi/2
 		response = input(f"Enter the line's x-value, if known, or press ENTER if not "
 		                 f"(0 is the left edge and {shape(warped_image)[1]} is the right edge)\n"
 		                 f"> ")
@@ -69,6 +69,7 @@ def add_points(kind: str, warped_image: NDArray, point_sets: List[PointSet]) -> 
 			offset = None
 		else:
 			offset = float(response)
+		target = Line(pi/2, offset)
 	elif kind.startswith("o") or kind == "l":
 		response = input("Enter the line's angle, if known, or press ENTER if not "
 		                 "(0 is horizontal, 90 or -90 is vertical, 45 is top-left to bottom-right, and -45 is top-right to bottom-left)\n"
@@ -77,7 +78,9 @@ def add_points(kind: str, warped_image: NDArray, point_sets: List[PointSet]) -> 
 			angle = None
 		else:
 			angle = radians(float(response))
-		offset = None
+		target = Line(angle, None)
+	elif kind.startswith("c") or kind == "a":
+		target = Arc()
 	else:
 		raise ValueError("I don't recognize that command.  use one of the commands from the list I just gave you, please.")
 
@@ -110,7 +113,7 @@ def add_points(kind: str, warped_image: NDArray, point_sets: List[PointSet]) -> 
 
 	# add the new points to the main list
 	if len(points) > 0:
-		point_sets.append(PointSet(angle, offset, array(points)))
+		point_sets.append(PointSet(target, array(points)))
 		print("Successfully added a line!")
 	else:
 		print("Declined to add a line.")
@@ -185,19 +188,21 @@ def show_current_state(warped_image: NDArray, point_sets: List[PointSet], title:
 	plt.imshow(faded_warped_image, extent=(0, shape(warped_image)[1], shape(warped_image)[0], 0))
 	# plot the point sets
 	for index, point_set in enumerate(point_sets):
-		if point_set.angle is None:
+		if type(point_set.target) is Arc:
+			color = "#7f7f00"  # circles are yellow
+		elif point_set.target.angle is None:
 			color = "#007f00"  # ambiguus lines are green
-		elif abs(cos(point_set.angle)) < 1e-15:
+		elif abs(cos(point_set.target.angle)) < 1e-15:
 			color = "#7f0000"  # vertical lines are red
-		elif abs(sin(point_set.angle)) < 1e-15:
+		elif abs(sin(point_set.target.angle)) < 1e-15:
 			color = "#00007f"  # horizontal lines are blue
-		elif sin(point_set.angle) > 0:
+		elif sin(point_set.target.angle) > 0:
 			color = "#007f00"  # downward-sloping lines are green
 		else:
 			color = "#3f007f"  # upward-sloping lines are purple
 		plt.scatter(point_set.points[:, 0], point_set.points[:, 1], c=color, marker=".")
-		if point_set.offset is not None:
-			plt.text(mean(point_set.points[:, 0]), mean(point_set.points[:, 1]), f"{point_set.offset:.4g}")
+		if type(point_set.target) is Line and point_set.target.offset is not None:
+			plt.text(mean(point_set.points[:, 0]), mean(point_set.points[:, 1]), f"{point_set.target.offset:.4g}")
 	# set the title and window sizing
 	if title is not None:
 		plt.title(title)
@@ -213,14 +218,26 @@ def load_point_sets(filename: str) -> List[PointSet]:
 		return []
 	point_sets = []
 	for datum in data:
-		point_sets.append(PointSet(datum["angle"], datum["offset"], array(datum["points"])))
+		if datum["type"] == "Line":
+			point_sets.append(PointSet(Line(datum["angle"], datum["offset"]), array(datum["points"])))
+		else:
+			point_sets.append(PointSet(Arc(), array(datum["points"])))
 	return point_sets
 
 
 def save_point_sets(filename: str, point_sets: List[PointSet]) -> None:
 	data: List[Dict[str, Any]] = []
 	for point_set in point_sets:
-		data.append({"angle": point_set.angle, "offset": point_set.offset, "points": point_set.points.tolist()})
+		if type(point_set.target) is Line:
+			data.append({
+				"type": "Line", "angle": point_set.target.angle, "offset": point_set.target.offset,
+				"points": point_set.points.tolist(),
+			})
+		else:
+			data.append({
+				"type": "Arc",
+				"points": point_set.points.tolist(),
+			})
 	with open(filename + " reference points.json", "w") as file:
 		json.dump(data, file, indent="\t")
 

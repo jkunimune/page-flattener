@@ -37,7 +37,7 @@ def dewarp(image_warped: NDArray, point_sets_warped: List[PointSet], resolution:
 			apply_spline(point_set.points[:, 0], point_set.points[:, 1], x_spline).numpy(),
 			apply_spline(point_set.points[:, 0], point_set.points[:, 1], y_spline).numpy(),
 		], axis=1)
-		point_sets_flattened.append(PointSet(point_set.angle, point_set.offset, points_flattened))
+		point_sets_flattened.append(PointSet(point_set.target, points_flattened))
 
 	# recover the original image
 	print("Inverting the optimal transformation...")
@@ -68,8 +68,8 @@ def dewarp(image_warped: NDArray, point_sets_warped: List[PointSet], resolution:
 def optimize_spline_nodes(width: int, height: int, point_sets: List[PointSet], resolution: float) -> Tuple[Spline, Spline]:
 	# define the mesh grid that will be used to define the transformation
 	cell_size = sqrt(width*height)/resolution
-	x_node_warped = linspace(0, width, round(width/cell_size) + 1)
-	y_node_warped = linspace(0, height, round(height/cell_size) + 1)
+	x_node_warped = linspace(0, width, max(1, round(width/cell_size)) + 1)
+	y_node_warped = linspace(0, height, max(1, round(height/cell_size)) + 1)
 
 	# compress the state into a vector
 	x_node_initial, y_node_initial = meshgrid(x_node_warped, y_node_warped, indexing="xy")
@@ -90,19 +90,12 @@ def optimize_spline_nodes(width: int, height: int, point_sets: List[PointSet], r
 		for point_set in point_sets:
 			x = apply_spline(point_set.points[:, 0], point_set.points[:, 1], x_spline)
 			y = apply_spline(point_set.points[:, 0], point_set.points[:, 1], y_spline)
-			if point_set.angle is not None:
-				angle = torch.as_tensor(point_set.angle)
-			else:  # if the user didn't specify an angle, find the least squares angle
-				Δx = x - torch.mean(x)
-				Δy = y - torch.mean(y)
-				angle = torch.arctan2((-2*Δx*Δy).sum(), (Δx**2 - Δy**2).sum())/2
-			values = x*torch.sin(angle) + y*torch.cos(angle)
-			offset = point_set.offset
-			if point_set.offset is not None:
-				offset = torch.as_tensor(offset)
-			else:  # if the user didn't specify an offset, find the least squares offset
-				offset = torch.mean(values)
-			residual_vectors.append(values - offset)
+			if type(point_set.target) is Line:
+				actual_values, target_value = fit_line(x, y, point_set.target)
+				residual_vectors.append(actual_values - target_value)
+			elif type(point_set.target) is Arc:
+				actual_radius2s, target_radius2 = fit_arc(x, y)  # use squared radii so that we can solve it algebraicly
+				residual_vectors.append((actual_radius2s - target_radius2)/2/torch.sqrt(target_radius2))
 		# the second derivatives at each point can also be treated as residuals for regularization purposes
 		if regularization_weight != 0:
 			for spline in [x_spline, y_spline]:
@@ -155,6 +148,43 @@ def optimize_spline_nodes(width: int, height: int, point_sets: List[PointSet], r
 	x_spline.z_node = x_spline.z_node.numpy()
 	y_spline.z_node = y_spline.z_node.numpy()
 	return x_spline, y_spline
+
+
+def fit_line(x: Tensor, y: Tensor, parameters: Line) -> Tuple[Tensor, Tensor]:
+	if parameters.angle is not None:
+		angle = torch.as_tensor(parameters.angle)
+	else:  # if the user didn't specify an angle, find the least squares angle
+		Δx = x - torch.mean(x)
+		Δy = y - torch.mean(y)
+		angle = torch.arctan2(torch.mean(-2*Δx*Δy), torch.mean(Δx**2 - Δy**2))/2
+	actual_offsets = x*torch.sin(angle) + y*torch.cos(angle)
+	if parameters.offset is not None:
+		offset = torch.as_tensor(parameters.offset)
+	else:  # if the user didn't specify an offset, find the least squares offset
+		offset = torch.mean(actual_offsets)
+	return actual_offsets, offset
+
+
+def fit_arc(x: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
+	sx = torch.mean(x)
+	sy = torch.mean(y)
+	sxx = torch.mean(x**2)
+	sxy = torch.mean(x*y)
+	syy = torch.mean(y**2)
+	sxxx = torch.mean(x**3)
+	sxxy = torch.mean(x**2*y)
+	sxyy = torch.mean(x*y**2)
+	syyy = torch.mean(y**3)
+	a1 = 2*(sx**2 - sxx)
+	a2 = b1 = 2*(sx*sy - sxy)
+	b2 = 2*(sy**2 - syy)
+	c1 = (sxx*sx - sxxx + sx*syy - sxyy)
+	c2 = (sxx*sy - sxxy + sy*syy - syyy)
+	det = a1*b2 - a2*b1
+	x_center = (c1*b2 - c2*b1)/det
+	y_center = (a1*c2 - a2*c1)/det
+	radius2 = sxx - 2*sx*x_center + x_center**2 + syy - 2*sy*y_center + y_center**2
+	return (x - x_center)**2 + (y - y_center)**2, radius2
 
 
 def apply_inverse_splines(x_desired: NDArray, y_desired: NDArray, x_spline: Spline, y_spline: Spline) -> Tuple[NDArray, NDArray]:
@@ -296,7 +326,17 @@ class Spline:
 
 
 class PointSet:
-	def __init__(self, angle: Optional[float], offset: Optional[float], points: Union[NDArray, Tensor]):
+	def __init__(self, target: Shape, points: Union[NDArray, Tensor]):
+		self.target = target
+		self.points = points
+
+class Line:
+	def __init__(self, angle: Optional[float], offset: Optional[float]):
 		self.angle = angle
 		self.offset = offset
-		self.points = points
+
+class Arc:
+	def __init__(self):
+		pass  # in the future I may allow the user to specify radius and/or center coordinates, but not now.
+
+Shape = Union[Line, Arc]
