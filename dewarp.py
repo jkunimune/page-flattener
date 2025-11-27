@@ -4,12 +4,13 @@ To view a copy of this license, visit <https://creativecommons.org/publicdomain/
 """
 from __future__ import annotations
 
+from time import time
 from typing import List, Optional, Tuple, Union
 
 import torch
 from PIL import Image
 from numpy import shape, linspace, sqrt, meshgrid, stack, arange, transpose, concatenate, array, \
-	ravel, size, newaxis, linalg, clip, ceil, where, sign, hypot
+	ravel, size, newaxis, linalg, clip, ceil, hypot, zeros_like
 from numpy.linalg import LinAlgError
 from numpy.typing import NDArray
 from scipy import optimize
@@ -25,6 +26,8 @@ REGULARIZATION_FACTOR = 1
 
 def dewarp(image_warped: NDArray, point_sets_warped: List[PointSet], resolution: float) -> Tuple[NDArray, List[PointSet]]:
 	num_y, num_x, num_channels = shape(image_warped)
+
+	start_time = time()
 
 	# do the optimization to define the flattening spline
 	print("Solving for the optimal transformation...")
@@ -61,7 +64,9 @@ def dewarp(image_warped: NDArray, point_sets_warped: List[PointSet], resolution:
 		for k in range(num_channels)
 	], axis=2).astype(image_warped.dtype, casting="unsafe")
 
-	print("Got it!")
+	end_time = time()
+	print(f"Got it in {end_time - start_time:.0f} s!")
+
 	return image_flattened, point_sets_flattened
 
 
@@ -210,10 +215,6 @@ def apply_inverse_splines(x_desired: NDArray, y_desired: NDArray, x_spline: Spli
 			print("The inversion failed due to a point with no gradient!  That shouldn't happen…")
 			return states[..., 0], states[..., 1]
 		states += steps
-		# coerce it back in bounds
-		δ = 0.01*(x_spline.x_node[1] - x_spline.x_node[0] + x_spline.y_node[1] - x_spline.y_node[0])/2
-		states[..., 0] = clip(states[..., 0], x_spline.x_node[1] - δ, x_spline.x_node[-2] + δ)
-		states[..., 1] = clip(states[..., 1], x_spline.y_node[1] - δ, x_spline.y_node[-2] + δ)
 
 	return states[..., 0], states[..., 1]
 
@@ -228,8 +229,8 @@ def apply_spline(x_input: NDArray, y_input: NDArray, spline: Spline) -> Tensor:
 
 	# apply the 4×4 convolution kernel
 	result = torch.zeros(shape(x_input) + shape(spline.z_node)[2:], dtype=torch.float64)
-	row_weits = {Δi: bicubic_function(di_input - Δi) for Δi in range(-2, 2)}
-	col_weits = {Δj: bicubic_function(dj_input - Δj) for Δj in range(-2, 2)}
+	row_weits = {Δi: bicubic_function(di_input - Δi, -Δi) for Δi in range(-2, 2)}
+	col_weits = {Δj: bicubic_function(dj_input - Δj, -Δj) for Δj in range(-2, 2)}
 	for Δi in range(-2, 2):
 		for Δj in range(-2, 2):
 			weight = torch.as_tensor(row_weits[Δi]*col_weits[Δj])
@@ -245,10 +246,10 @@ def spline_gradient(x_input: NDArray, y_input: NDArray, spline: Spline) -> Tenso
 	# apply the 4×4 differentiated convolution kernel
 	x_gradients = torch.zeros(shape(x_input) + shape(spline.z_node)[2:])
 	y_gradients = torch.zeros(shape(x_input) + shape(spline.z_node)[2:])
-	row_weits = {Δi: bicubic_function(di_input - Δi) for Δi in range(-2, 2)}
-	col_weits = {Δj: bicubic_function(dj_input - Δj) for Δj in range(-2, 2)}
-	row_slopes = {Δi: bicubic_function_derivative(di_input - Δi) for Δi in range(-2, 2)}
-	col_slopes = {Δj: bicubic_function_derivative(dj_input - Δj) for Δj in range(-2, 2)}
+	row_weits = {Δi: bicubic_function(di_input - Δi, -Δi) for Δi in range(-2, 2)}
+	col_weits = {Δj: bicubic_function(dj_input - Δj, -Δj) for Δj in range(-2, 2)}
+	row_slopes = {Δi: bicubic_function_derivative(di_input - Δi, -Δi) for Δi in range(-2, 2)}
+	col_slopes = {Δj: bicubic_function_derivative(dj_input - Δj, -Δj) for Δj in range(-2, 2)}
 	for Δi in range(-2, 2):
 		for Δj in range(-2, 2):
 			x_gradients += row_weits[Δi]*col_slopes[Δj]*spline.z_node[i_node + Δi, j_node + Δj, ...]
@@ -259,30 +260,30 @@ def spline_gradient(x_input: NDArray, y_input: NDArray, spline: Spline) -> Tenso
 	return torch.stack([x_gradients, y_gradients], dim=-1)
 
 
-def bicubic_function(Δi: NDArray, a=-0.5) -> NDArray:
-	x = abs(Δi)
-	return where(
-		x <= 1,
-		(a + 2)*x**3 - (a + 3)*x**2 + 1,
-		where(
-			x < 2,
-			a*x**3 - 5*a*x**2 + 8*a*x - 4*a,
-			0,
-		),
-	)
+def bicubic_function(x: NDArray, section: int) -> NDArray:
+	if section == -1:
+		return 0.5*x**3 + 2.5*x**2 + 4*x + 2
+	elif section == 0:
+		return -1.5*x**3 - 2.5*x**2 + 1
+	elif section == 1:
+		return 1.5*x**3 - 2.5*x**2 + 1
+	elif section == 2:
+		return -0.5*x**3 + 2.5*x**2 - 4*x + 2
+	else:
+		return zeros_like(x)
 
 
-def bicubic_function_derivative(Δi, a=-0.5):
-	x = abs(Δi)
-	return sign(Δi)*where(
-		x <= 1,
-		3*(a + 2)*x**2 - 2*(a + 3)*x,
-		where(
-			x < 2,
-			3*a*x**2 - 10*a*x + 8*a,
-			0,
-		),
-	)
+def bicubic_function_derivative(x: NDArray, section: int) -> NDArray:
+	if section == -1:
+		return 1.5*x**2 + 5*x + 4
+	elif section == 0:
+		return -4.5*x**2 - 5*x
+	elif section == 1:
+		return 4.5*x**2 - 5*x
+	elif section == 2:
+		return -1.5*x**2 + 5*x - 4
+	else:
+		return zeros_like(x)
 
 
 def digitize(x, bins) -> Tuple[NDArray, NDArray]:
