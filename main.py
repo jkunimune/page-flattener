@@ -8,14 +8,14 @@ import matplotlib.pyplot as plt
 import matplotlib.image as img
 from matplotlib.backend_bases import MouseButton
 from matplotlib.figure import Figure
-from numpy import shape, array, radians, pi, sin, cos, mean, hypot, inf, empty
+from numpy import shape, array, radians, pi, sin, cos, mean, hypot, inf, empty, float64, uint8, uint16, uint32, float32
 from numpy.typing import NDArray
 
 from dewarp import PointSet, dewarp, Arc, Line
 
 
 def main(filename: str) -> None:
-	warped_image = img.imread(filename)
+	warped_image = make_the_image_format_be_reasonable(img.imread(filename))
 	point_sets: List[PointSet] = load_point_sets(filename)
 	while True:
 		command = input("Enter a command:\n"
@@ -187,7 +187,7 @@ def dewarp_image(warped_image: NDArray, point_sets: List[PointSet]) -> NDArray:
 def show_current_state(warped_image: NDArray, point_sets: List[PointSet], title: str = None) -> Figure:
 	figure = plt.figure()
 	# plot the image
-	faded_warped_image = 128 + warped_image//2
+	faded_warped_image = 0.5 + warped_image/2
 	plt.imshow(faded_warped_image, extent=(0, shape(warped_image)[1], shape(warped_image)[0], 0))
 	# plot the point sets
 	for index, point_set in enumerate(point_sets):
@@ -243,6 +243,25 @@ def save_point_sets(filename: str, point_sets: List[PointSet]) -> None:
 			})
 	with open(filename + " reference points.json", "w") as file:
 		json.dump(data, file, indent="\t")
+
+
+def make_the_image_format_be_reasonable(image):
+	"""
+	matplotlib, what in davy jones's locker. why is this function necessary? who the heck thaut it
+	was roasonable to have the image pixel values be on a scale dependent on the dtype and provide
+	no way to directly tell the user what that scale is or ask for it to be given as a specific
+	dtype‽ this is one of the stupidest function designs I've ever seen.
+	"""
+	if image.dtype == float32 or image.dtype == float64:
+		return image
+	elif image.dtype == uint8:
+		return image/(2.**8 - 1)
+	elif image.dtype == uint16:
+		return image/(2.**16 - 1)
+	elif image.dtype == uint32:
+		return image/(2.**32 - 1)
+	else:
+		raise ValueError(f"sorry I can't handle that image because I don't know how to handle this image format that Matplotlib has never spit at me before.  {image.dtype}.")
 
 
 if __name__ == "__main__":
