@@ -96,11 +96,18 @@ def optimize_spline_nodes(width: int, height: int, point_sets: List[PointSet], r
 			x = apply_spline(point_set.points[:, 0], point_set.points[:, 1], x_spline)
 			y = apply_spline(point_set.points[:, 0], point_set.points[:, 1], y_spline)
 			if type(point_set.target) is Line:
-				actual_values, target_value = fit_line(x, y, point_set.target)
-				residual_vectors.append(actual_values - target_value)
+				residuals, directions = fit_line(x, y, point_set.target)
 			elif type(point_set.target) is Arc:
-				actual_radius2s, target_radius2 = fit_arc(x, y)  # use squared radii so that we can solve it algebraicly
-				residual_vectors.append((actual_radius2s - target_radius2)/2/torch.sqrt(target_radius2))
+				residuals, directions = fit_arc(x, y)  # use squared radii so that we can solve it algebraicly
+			else:
+				raise ValueError(point_set.target)
+			jacobians = torch.stack([
+				spline_gradient(point_set.points[:, 0], point_set.points[:, 1], x_spline),
+				spline_gradient(point_set.points[:, 0], point_set.points[:, 1], y_spline),
+			], dim=-2)
+			inv_jacobians = torch.linalg.inv(jacobians)
+			scale = torch.linalg.vector_norm((inv_jacobians@directions[..., newaxis])[..., 0], dim=-1)  # scale the residuals so that we're measuring in warped image units
+			residual_vectors.append(scale*residuals)
 		# the second derivatives at each point can also be treated as residuals for regularization purposes
 		if regularization_weight != 0:
 			for spline in [x_spline, y_spline]:
@@ -144,8 +151,8 @@ def optimize_spline_nodes(width: int, height: int, point_sets: List[PointSet], r
 		jac=residuals_gradient,
 		x0=initial_state,
 		max_nfev=NUM_OPTIMIZATION_ITERATIONS,
+		verbose=2,
 	)
-	print(optimization.message)
 	optimal_state = optimization.x
 
 	# don't forget to convert from Tensor back to Numpy array before returning
@@ -157,17 +164,19 @@ def optimize_spline_nodes(width: int, height: int, point_sets: List[PointSet], r
 
 def fit_line(x: Tensor, y: Tensor, parameters: Line) -> Tuple[Tensor, Tensor]:
 	if parameters.angle is not None:
-		angle = torch.as_tensor(parameters.angle)
+		angle = torch.as_tensor(parameters.angle, dtype=torch.float64)
 	else:  # if the user didn't specify an angle, find the least squares angle
 		Δx = x - torch.mean(x)
 		Δy = y - torch.mean(y)
 		angle = torch.arctan2(torch.mean(-2*Δx*Δy), torch.mean(Δx**2 - Δy**2))/2
-	actual_offsets = x*torch.sin(angle) + y*torch.cos(angle)
+	sin_angle = torch.sin(angle)
+	cos_angle = torch.cos(angle)
+	actual_offsets = x*sin_angle + y*cos_angle
 	if parameters.offset is not None:
-		offset = torch.as_tensor(parameters.offset)
+		offset = torch.as_tensor(parameters.offset, dtype=torch.float64)
 	else:  # if the user didn't specify an offset, find the least squares offset
 		offset = torch.mean(actual_offsets)
-	return actual_offsets, offset
+	return actual_offsets - offset, torch.stack([sin_angle, cos_angle]).expand(x.shape + (-1,))
 
 
 def fit_arc(x: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
@@ -188,8 +197,11 @@ def fit_arc(x: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
 	det = a1*b2 - a2*b1
 	x_center = (c1*b2 - c2*b1)/det
 	y_center = (a1*c2 - a2*c1)/det
-	radius2 = sxx - 2*sx*x_center + x_center**2 + syy - 2*sy*y_center + y_center**2
-	return (x - x_center)**2 + (y - y_center)**2, radius2
+	target_radius2 = sxx - 2*sx*x_center + x_center**2 + syy - 2*sy*y_center + y_center**2
+	r = torch.stack([x - x_center, y - y_center], dim=-1)
+	r2 = r[..., 0]**2 + r[..., 1]**2
+	error_magnitude = (r2 - target_radius2)/2/torch.sqrt(target_radius2)
+	return error_magnitude, r/torch.sqrt(r2[..., newaxis])
 
 
 def apply_inverse_splines(x_desired: NDArray, y_desired: NDArray, x_spline: Spline, y_spline: Spline) -> Tuple[NDArray, NDArray]:
@@ -244,16 +256,18 @@ def spline_gradient(x_input: NDArray, y_input: NDArray, spline: Spline) -> Tenso
 	j_node, dj_input = digitize(x_input, spline.x_node)
 
 	# apply the 4×4 differentiated convolution kernel
-	x_gradients = torch.zeros(shape(x_input) + shape(spline.z_node)[2:])
-	y_gradients = torch.zeros(shape(x_input) + shape(spline.z_node)[2:])
+	x_gradients = torch.zeros(shape(x_input) + shape(spline.z_node)[2:], dtype=torch.float64)
+	y_gradients = torch.zeros(shape(x_input) + shape(spline.z_node)[2:], dtype=torch.float64)
 	row_weits = {Δi: bicubic_function(di_input - Δi, -Δi) for Δi in range(-2, 2)}
 	col_weits = {Δj: bicubic_function(dj_input - Δj, -Δj) for Δj in range(-2, 2)}
 	row_slopes = {Δi: bicubic_function_derivative(di_input - Δi, -Δi) for Δi in range(-2, 2)}
 	col_slopes = {Δj: bicubic_function_derivative(dj_input - Δj, -Δj) for Δj in range(-2, 2)}
 	for Δi in range(-2, 2):
 		for Δj in range(-2, 2):
-			x_gradients += row_weits[Δi]*col_slopes[Δj]*spline.z_node[i_node + Δi, j_node + Δj, ...]
-			y_gradients += row_slopes[Δi]*col_weits[Δj]*spline.z_node[i_node + Δi, j_node + Δj, ...]
+			x_weit = torch.as_tensor(row_weits[Δi]*col_slopes[Δj])
+			y_weit = torch.as_tensor(row_slopes[Δi]*col_weits[Δj])
+			x_gradients += x_weit*spline.z_node[i_node + Δi, j_node + Δj, ...]
+			y_gradients += y_weit*spline.z_node[i_node + Δi, j_node + Δj, ...]
 	# don't forget to scale to correct for the change of coordinates earlier in this function
 	x_gradients /= (spline.x_node[1] - spline.x_node[0])
 	y_gradients /= (spline.y_node[1] - spline.y_node[0])
