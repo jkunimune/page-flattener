@@ -102,7 +102,10 @@ def add_points(kind: str, warped_image: NDArray, point_sets: List[PointSet]) -> 
 		if event.key == "backspace" or event.key == "delete":
 			if len(points) > 0:
 				points.pop()
-			scatter.set_offsets(array(points))
+			if len(points) > 0:
+				scatter.set_offsets(array(points))
+			else:
+				scatter.set_offsets(empty((0, 2)))
 			figure.canvas.draw()
 
 	figure.canvas.mpl_connect("button_press_event", on_click)
@@ -114,9 +117,9 @@ def add_points(kind: str, warped_image: NDArray, point_sets: List[PointSet]) -> 
 	# add the new points to the main list
 	if len(points) > 0:
 		point_sets.append(PointSet(target, array(points)))
-		print("Successfully added a line!")
+		print("Successfully added points!")
 	else:
-		print("Declined to add a line.")
+		print("Declined to add any points.")
 	return point_sets
 
 
