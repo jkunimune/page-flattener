@@ -90,24 +90,24 @@ def optimize_spline_nodes(width: int, height: int, point_sets: List[PointSet], r
 	# define the residuals function
 	def residuals_function(state):
 		x_spline, y_spline = unpack_state(state)
-		residual_vectors = []
+		residual_sets = []
 		# each point set has its own set of residuals
 		for point_set in point_sets:
 			x = apply_spline(point_set.points[:, 0], point_set.points[:, 1], x_spline)
 			y = apply_spline(point_set.points[:, 0], point_set.points[:, 1], y_spline)
 			if type(point_set.target) is Line:
-				residuals, directions = fit_line(x, y, point_set.target)
+				residual_signs, residual_vectors = fit_line(x, y, point_set.target)
 			elif type(point_set.target) is Arc:
-				residuals, directions = fit_arc(x, y)  # use squared radii so that we can solve it algebraicly
+				residual_signs, residual_vectors = fit_arc(x, y)  # use squared radii so that we can solve it algebraicly
 			else:
 				raise ValueError(point_set.target)
 			jacobians = torch.stack([
 				spline_gradient(point_set.points[:, 0], point_set.points[:, 1], x_spline),
 				spline_gradient(point_set.points[:, 0], point_set.points[:, 1], y_spline),
 			], dim=-2)
-			inv_jacobians = torch.linalg.inv(jacobians)
-			scale = torch.linalg.vector_norm((inv_jacobians@directions[..., newaxis])[..., 0], dim=-1)  # scale the residuals so that we're measuring in warped image units
-			residual_vectors.append(scale*residuals)
+			abs_residual_vectors = torch.linalg.lstsq(jacobians, residual_vectors).solution  # scale the residuals so that we're measuring in warped image units
+			abs_residuals = residual_signs*torch.linalg.vector_norm(abs_residual_vectors, dim=-1)
+			residual_sets.append(abs_residuals)
 		# the second derivatives at each point can also be treated as residuals for regularization purposes
 		if regularization_weight != 0:
 			for spline in [x_spline, y_spline]:
@@ -121,7 +121,7 @@ def optimize_spline_nodes(width: int, height: int, point_sets: List[PointSet], r
 					spline.z_node[i + 1, j] + spline.z_node[i, j + 1] -
 					4*spline.z_node[i, j]
 				)/cell_size**2
-				residual_vectors.append(torch.ravel(regularization_weight*curvature))
+				residual_sets.append(torch.ravel(regularization_weight*curvature))
 				# dxdy
 				i, j = meshgrid(
 					arange(1, size(spline.y_node)),
@@ -131,8 +131,8 @@ def optimize_spline_nodes(width: int, height: int, point_sets: List[PointSet], r
 					spline.z_node[i, j] - spline.z_node[i, j - 1] -
 					spline.z_node[i - 1, j] + spline.z_node[i - 1, j - 1]
 				)/cell_size**2
-				residual_vectors.append(torch.ravel(regularization_weight*curvature))
-		return torch.concatenate(residual_vectors)
+				residual_sets.append(torch.ravel(regularization_weight*curvature))
+		return torch.concatenate(residual_sets)
 
 	# autodifferentiate it
 	def residuals_gradient(state):
@@ -151,6 +151,7 @@ def optimize_spline_nodes(width: int, height: int, point_sets: List[PointSet], r
 		jac=residuals_gradient,
 		x0=initial_state,
 		max_nfev=NUM_OPTIMIZATION_ITERATIONS,
+		ftol=1e-5,
 		verbose=2,
 	)
 	optimal_state = optimization.x
@@ -176,7 +177,10 @@ def fit_line(x: Tensor, y: Tensor, parameters: Line) -> Tuple[Tensor, Tensor]:
 		offset = torch.as_tensor(parameters.offset, dtype=torch.float64)
 	else:  # if the user didn't specify an offset, find the least squares offset
 		offset = torch.mean(actual_offsets)
-	return actual_offsets - offset, torch.stack([sin_angle, cos_angle]).expand(x.shape + (-1,))
+	error = actual_offsets - offset
+	error_sign = torch.sign(error)
+	error_vector = error[..., newaxis]*torch.stack([sin_angle, cos_angle]).expand(x.shape + (-1,))
+	return error_sign, error_vector
 
 
 def fit_arc(x: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
@@ -200,8 +204,9 @@ def fit_arc(x: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
 	target_radius2 = sxx - 2*sx*x_center + x_center**2 + syy - 2*sy*y_center + y_center**2
 	r = torch.stack([x - x_center, y - y_center], dim=-1)
 	r2 = r[..., 0]**2 + r[..., 1]**2
-	error_magnitude = (r2 - target_radius2)/2/torch.sqrt(target_radius2)
-	return error_magnitude, r/torch.sqrt(r2[..., newaxis])
+	error_sign = torch.sign(r2 - target_radius2)
+	error_vector = r*((r2 - target_radius2)/2/r2)[..., newaxis]
+	return error_sign, error_vector
 
 
 def apply_inverse_splines(x_desired: NDArray, y_desired: NDArray, x_spline: Spline, y_spline: Spline) -> Tuple[NDArray, NDArray]:
