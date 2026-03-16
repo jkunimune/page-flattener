@@ -8,10 +8,12 @@ import matplotlib.pyplot as plt
 import matplotlib.image as img
 from matplotlib.backend_bases import MouseButton
 from matplotlib.figure import Figure
-from numpy import shape, array, radians, pi, sin, cos, mean, hypot, inf, empty, float64, uint8, uint16, uint32, float32
+from matplotlib.ticker import MultipleLocator
+from numpy import shape, array, radians, pi, sin, cos, mean, hypot, inf, empty, float64, uint8, uint16, uint32, float32, \
+	meshgrid, linspace, diff
 from numpy.typing import NDArray
 
-from dewarp import PointSet, dewarp, Arc, Line
+from dewarp import PointSet, dewarp, Arc, Line, Spline, apply_spline
 
 
 def main(filename: str) -> None:
@@ -179,16 +181,37 @@ def dewarp_image(warped_image: NDArray, point_sets: List[PointSet]) -> NDArray:
 		resolution = float(response)
 	if resolution < 1 or resolution > 100:
 		raise ValueError("That resolution is ridiculous.  Pick a different one.")
-	flat_image, transformed_point_sets = dewarp(warped_image, point_sets, resolution)
-	show_current_state(flat_image, transformed_point_sets)
+	flat_image, transformed_point_sets, x_spline, y_spline = dewarp(warped_image, point_sets, resolution)
+	show_current_state(warped_image, point_sets, x_spline, y_spline, dewarped=False)
+	show_current_state(flat_image, transformed_point_sets, x_spline, y_spline, dewarped=True)
 	return flat_image
 
 
-def show_current_state(warped_image: NDArray, point_sets: List[PointSet], title: str = None) -> Figure:
+def show_current_state(image: NDArray, point_sets: List[PointSet], x_spline: Spline = None, y_spline: Spline = None, title: str = None, dewarped=False) -> Figure:
 	figure = plt.figure()
 	# plot the image
-	faded_warped_image = 0.5 + warped_image/2
-	plt.imshow(faded_warped_image, extent=(0, shape(warped_image)[1], shape(warped_image)[0], 0))
+	faded_warped_image = 0.5 + image/2
+	plt.imshow(faded_warped_image, extent=(0, shape(image)[1], shape(image)[0], 0))
+	# plot the coordinate grid
+	if x_spline is not None:
+		x, y = meshgrid(
+			linspace(x_spline.x_node[0], x_spline.x_node[-1], 201),
+			linspace(x_spline.y_node[0], x_spline.y_node[-1], 201),
+			indexing="ij")
+		if dewarped:
+			plt.scatter(x_spline.z_node, y_spline.z_node, color="k", marker="+")
+			X = x
+			Y = y
+		else:
+			plt.scatter(*meshgrid(x_spline.x_node, x_spline.y_node), color="k", marker="+")
+			X = apply_spline(x, y, x_spline)
+			Y = apply_spline(x, y, y_spline)
+		plt.contour(
+			x, y, X, colors="k", linestyles=["solid"], linewidths=[0.5],
+			locator=MultipleLocator(round(mean(diff(x_spline.x_node))/5)))
+		plt.contour(
+			x, y, Y, colors="k", linestyles=["solid"], linewidths=[0.5],
+			locator=MultipleLocator(round(mean(diff(x_spline.x_node))/5)))
 	# plot the point sets
 	for index, point_set in enumerate(point_sets):
 		if type(point_set.target) is Arc:
@@ -206,6 +229,8 @@ def show_current_state(warped_image: NDArray, point_sets: List[PointSet], title:
 		plt.scatter(point_set.points[:, 0], point_set.points[:, 1], c=color, marker=".")
 		if type(point_set.target) is Line and point_set.target.offset is not None:
 			plt.text(mean(point_set.points[:, 0]), mean(point_set.points[:, 1]), f"{point_set.target.offset:.4g}")
+	plt.xlim(0, shape(image)[1])
+	plt.ylim(0, shape(image)[0])
 	# set the title and window sizing
 	if title is not None:
 		plt.title(title)

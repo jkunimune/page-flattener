@@ -24,7 +24,9 @@ NUM_INVERSION_ITERATIONS = 10
 REGULARIZATION_FACTOR = 1
 
 
-def dewarp(image_warped: NDArray, point_sets_warped: List[PointSet], resolution: float) -> Tuple[NDArray, List[PointSet]]:
+def dewarp(
+		image_warped: NDArray, point_sets_warped: List[PointSet], resolution: float,
+) -> Tuple[NDArray, List[PointSet], Spline, Spline]:
 	num_y, num_x, num_channels = shape(image_warped)
 
 	start_time = time()
@@ -67,7 +69,7 @@ def dewarp(image_warped: NDArray, point_sets_warped: List[PointSet], resolution:
 	end_time = time()
 	print(f"Got it in {end_time - start_time:.0f} s!")
 
-	return image_flattened, point_sets_flattened
+	return image_flattened, point_sets_flattened, x_spline, y_spline
 
 
 def optimize_spline_nodes(width: int, height: int, point_sets: List[PointSet], resolution: float) -> Tuple[Spline, Spline]:
