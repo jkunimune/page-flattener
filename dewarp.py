@@ -8,7 +8,6 @@ from time import time
 from typing import List, Optional, Tuple, Union
 
 import torch
-from PIL import Image
 from numpy import shape, linspace, sqrt, meshgrid, stack, arange, transpose, concatenate, array, \
 	ravel, size, newaxis, linalg, clip, ceil, hypot, zeros_like
 from numpy.linalg import LinAlgError
@@ -51,12 +50,13 @@ def dewarp(
 	macropixel_size = max(1, cell_size/10)
 	full_shape = (num_x, num_y)  # these shapes are xy indexing because they're going into PIL; everything else is yx indexing
 	reduced_shape = (round(num_x/macropixel_size), round(num_y/macropixel_size))
-	x_macropixel_flat = array(Image.fromarray(x_pixel_flat).resize(reduced_shape))
-	y_macropixel_flat = array(Image.fromarray(y_pixel_flat).resize(reduced_shape))
+	x_macropixel_flat = resample(x_pixel_flat, reduced_shape)
+	y_macropixel_flat = resample(y_pixel_flat, reduced_shape)
 	x_macropixel_warp, y_macropixel_warp = apply_inverse_splines(
 		x_macropixel_flat, y_macropixel_flat, x_spline, y_spline)
-	x_pixel_warp = array(Image.fromarray(x_macropixel_warp).resize(full_shape))
-	y_pixel_warp = array(Image.fromarray(y_macropixel_warp).resize(full_shape))
+
+	x_pixel_warp = resample(x_macropixel_warp, full_shape)
+	y_pixel_warp = resample(y_macropixel_warp, full_shape)
 	print("Applying the inverse transformation to the image...")
 	image_flattened = stack([
 		RegularGridInterpolator(
@@ -209,6 +209,18 @@ def fit_arc(x: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
 	error_sign = torch.sign(r2 - target_radius2)
 	error_vector = r*((r2 - target_radius2)/2/r2)[..., newaxis]
 	return error_sign, error_vector
+
+
+def resample(image: NDArray, new_size: tuple[int, int]) -> NDArray:
+	""" interpolate an image so that the edges are the same but the interior has a different sample density """
+	x_old = arange(0, shape(image)[1])
+	y_old = arange(0, shape(image)[0])
+	x_new = linspace(0, shape(image)[1] - 1, new_size[0])
+	y_new = linspace(0, shape(image)[0] - 1, new_size[1])
+	print(x_old, y_old)
+	print(image.shape)
+	print(x_new, y_new)
+	return RegularGridInterpolator((x_old, y_old), image.T)(meshgrid(x_new, y_new, indexing="xy"))
 
 
 def apply_inverse_splines(x_desired: NDArray, y_desired: NDArray, x_spline: Spline, y_spline: Spline) -> Tuple[NDArray, NDArray]:
