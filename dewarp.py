@@ -217,10 +217,7 @@ def resample(image: NDArray, new_size: tuple[int, int]) -> NDArray:
 	y_old = arange(0, shape(image)[0])
 	x_new = linspace(0, shape(image)[1] - 1, new_size[0])
 	y_new = linspace(0, shape(image)[0] - 1, new_size[1])
-	print(x_old, y_old)
-	print(image.shape)
-	print(x_new, y_new)
-	return RegularGridInterpolator((x_old, y_old), image.T)(meshgrid(x_new, y_new, indexing="xy"))
+	return RegularGridInterpolator((x_old, y_old), image.T)(transpose(meshgrid(x_new, y_new, indexing="xy"), (1, 2, 0)))
 
 
 def apply_inverse_splines(x_desired: NDArray, y_desired: NDArray, x_spline: Spline, y_spline: Spline) -> Tuple[NDArray, NDArray]:
