@@ -9,13 +9,17 @@ from typing import List, Optional, Tuple, Union
 
 import torch
 from numpy import shape, linspace, sqrt, meshgrid, stack, arange, transpose, concatenate, array, \
-	ravel, size, newaxis, linalg, clip, ceil, hypot, zeros_like
+	ravel, size, newaxis, linalg, clip, ceil, hypot, zeros_like, pi
 from numpy.linalg import LinAlgError
 from numpy.typing import NDArray
 from scipy import optimize
 from scipy.interpolate import RegularGridInterpolator
 from torch import Tensor
 from torch.autograd.functional import jacobian
+
+
+zero = torch.tensor(0.)
+one = torch.tensor(1.)
 
 
 NUM_OPTIMIZATION_ITERATIONS = 100
@@ -112,28 +116,14 @@ def optimize_spline_nodes(width: int, height: int, point_sets: List[PointSet], r
 			residual_sets.append(abs_residuals)
 		# the second derivatives at each point can also be treated as residuals for regularization purposes
 		if regularization_weight != 0:
-			for spline in [x_spline, y_spline]:
-				# dx^2 + dy^2
-				i, j = meshgrid(
-					arange(1, size(spline.y_node) - 1),
-					arange(1, size(spline.x_node) - 1),
-					indexing="xy")
-				curvature = (
-					spline.z_node[i - 1, j] + spline.z_node[i, j - 1] +
-					spline.z_node[i + 1, j] + spline.z_node[i, j + 1] -
-					4*spline.z_node[i, j]
-				)/cell_size**2
-				residual_sets.append(torch.ravel(regularization_weight*curvature))
-				# dxdy
-				i, j = meshgrid(
-					arange(1, size(spline.y_node)),
-					arange(1, size(spline.x_node)),
-					indexing="xy")
-				curvature = 2*(
-					spline.z_node[i, j] - spline.z_node[i, j - 1] -
-					spline.z_node[i - 1, j] + spline.z_node[i - 1, j - 1]
-				)/cell_size**2
-				residual_sets.append(torch.ravel(regularization_weight*curvature))
+			x = linspace(x_spline.x_node[0], x_spline.x_node[1], (len(x_spline.x_node) - 1)*4 + 1)[1:-1:2]
+			y = linspace(x_spline.y_node[0], x_spline.y_node[1], (len(x_spline.y_node) - 1)*4 + 1)[1:-1:2]
+			x, y = meshgrid(x, y, indexing="ij")
+			x_hessians = spline_hessian(x, y, x_spline)
+			y_hessians = spline_hessian(x, y, y_spline)
+			illegal_fraction = 1 - paperlike_fraction(x_hessians, y_hessians)
+			residual_sets.append(torch.ravel(regularization_weight*illegal_fraction[:, None, None]*x_hessians))
+			residual_sets.append(torch.ravel(regularization_weight*illegal_fraction[:, None, None]*y_hessians))
 		return torch.concatenate(residual_sets)
 
 	# autodifferentiate it
@@ -163,6 +153,217 @@ def optimize_spline_nodes(width: int, height: int, point_sets: List[PointSet], r
 	x_spline.z_node = x_spline.z_node.numpy()
 	y_spline.z_node = y_spline.z_node.numpy()
 	return x_spline, y_spline
+
+
+def paperlike_fraction(x_hessians, y_hessians):
+	"""
+	given a bunch of 2×2 hessian matrices, calculate the fraction of each's Frobenius norm that can be
+	accounted for as curvature along a single direction of displacement in a single direction.
+	"""
+	d2x_dx2 = x_hessians[:, 0, 0]
+	d2x_dxy = x_hessians[:, 0, 1]  # assuming the hessians are symmetric, we can discard element 1,0
+	d2x_dy2 = x_hessians[:, 1, 1]
+	d2y_dx2 = y_hessians[:, 0, 0]
+	d2y_dxy = y_hessians[:, 0, 1]  # assuming the hessians are symmetric, we can discard element 1,0
+	d2y_dy2 = y_hessians[:, 1, 1]
+
+	total_curvature = d2x_dx2**2 + 2*d2x_dxy**2 + d2x_dy2**2 + d2y_dx2**2 + 2*d2y_dxy**2 + d2y_dy2**2
+
+	M = torch.stack([
+		torch.stack([1/2*(d2x_dx2 - d2x_dy2), 1/2*(d2y_dx2 - d2y_dy2)]),
+		torch.stack([d2x_dxy, d2y_dxy]),
+	])
+	B = torch.stack([1/2*(d2x_dx2 + d2x_dy2), 1/2*(d2y_dx2 + d2y_dy2)])
+
+	err_hessian = 2*torch.stack([
+		torch.stack([M[0, 0]**2 + M[0, 1]**2, M[0, 0]*M[1, 0] + M[0, 1]*M[1, 1]]),
+		torch.stack([M[0, 0]*M[1, 0] + M[0, 1]*M[1, 1], M[1, 0]**2 + M[1, 1]**2]),
+	])
+	err_gradient = 2*torch.stack([
+		M[0, 0]*B[0] + M[0, 1]*B[1],
+		M[1, 0]*B[0] + M[1, 1]*B[1]])
+	t_solve_principal = solve_quartic_equation(
+		err_hessian[1, 0] - err_gradient[1],
+		2*(err_hessian[0, 0] - err_hessian[1, 1] - err_gradient[0]),
+		-6*err_hessian[0, 1],
+		2*(err_hessian[1, 1] - err_hessian[0, 0] - err_gradient[0]),
+		err_hessian[0, 1] + err_gradient[1],
+	)
+	t_solve_backup = solve_quartic_equation(
+		err_hessian[1, 0] + err_gradient[1],
+		2*(err_hessian[0, 0] - err_hessian[1, 1] + err_gradient[0]),
+		-6*err_hessian[0, 1],
+		2*(err_hessian[1, 1] - err_hessian[0, 0] + err_gradient[0]),
+		err_hessian[0, 1] - err_gradient[1]
+	)
+	captured_curvature = []
+	for t, polarity in [(t, +1) for t in t_solve_principal] + [(t, -1) for t in t_solve_backup]:
+		if polarity > 0:
+			α = torch.arctan2(2*t, 1 - t**2)/2
+		else:
+			α = torch.arctan2(-2*t, t**2 - 1)/2
+		va = torch.stack([
+			torch.cos(2*α),
+			torch.sin(2*α)])
+		vb = torch.stack([
+			M[0, 0]*va[0] + M[1, 0]*va[1] + B[0],
+			M[0, 1]*va[0] + M[1, 1]*va[1] + B[1]])
+		captured_curvature.append(vb[0]**2 + vb[1]**2)
+	max_captured_curvature = torch.fmax(
+		torch.fmax(
+			torch.fmax(
+				torch.fmax(
+					torch.fmax(
+						torch.fmax(
+							torch.fmax(
+								captured_curvature[0],
+								captured_curvature[1]),
+							captured_curvature[2]),
+						captured_curvature[3]),
+					captured_curvature[4]),
+				captured_curvature[5]),
+			captured_curvature[6]),
+		captured_curvature[7])
+
+	return torch.where(total_curvature != 0, max_captured_curvature/total_curvature, one/4)  # in the event of a zero hessian, just guess 1/4 (it won't be autodifferentiable so hopefully that's okay)
+
+
+def solve_quartic_equation(a4_raw, a3_raw, a2_raw, a1_raw, a0_raw) -> list[torch.Tensor]:
+	"""
+	solve an equation of the form a4 x⁴ + a3 x³ + a2 x² + a1 x + a0 = 0, in a differentiable fashion.
+	if there are fewer than four roots, any imaginary or infinite ones will return as nan.
+	"""
+	a3 = a3_raw/a4_raw
+	a2 = a2_raw/a4_raw
+	a1 = a1_raw/a4_raw
+	a0 = a0_raw/a4_raw
+
+	constant = a3/4
+	b2 = a2 - 6*constant**2
+	b1 = a1 - 2*a2*constant + 8*constant**3
+	b0 = a0 - a1*constant + a2*constant**2 - 3*constant**4
+	Σ = torch.where(b1 > 0, one, -one)
+	(x1, _), (x2, y2), (x3, y3) = solve_cubic_equation(1., b2/2, (b2**2 - 4*b0)/16, -b1**2/64)
+	pivot1 = torch.sqrt(torch.maximum(zero, x1))
+	pivot2 = x2 + x3
+	root2 = 2*Σ*torch.sqrt(x2*x3 + y2**2)
+
+	(x1_backup, y1_backup), (x2_backup, y2_backup), (x3_backup, y3_backup) = solve_cubic_equation(a3_raw, a2_raw, a1_raw, a0_raw)
+
+	return [
+		torch.where(
+			a4_raw != 0,
+			pivot1 + torch.sqrt(pivot2 - root2) - constant,
+			torch.where(y1_backup == 0, x1_backup, torch.nan),
+		),
+		torch.where(
+			a4_raw != 0,
+			pivot1 - torch.sqrt(pivot2 - root2) - constant,
+			torch.where(y2_backup == 0, x2_backup, torch.nan),
+		),
+		torch.where(
+			a4_raw != 0,
+			-pivot1 + torch.sqrt(pivot2 + root2) - constant,
+			torch.where(y3_backup == 0, x3_backup, torch.nan),
+		),
+		torch.where(
+			a4_raw != 0,
+			-pivot1 - torch.sqrt(pivot2 + root2) - constant,
+			torch.nan,
+		),
+	]
+
+
+def solve_cubic_equation(
+		a3_raw: torch.Tensor, a2_raw: torch.Tensor, a1_raw: torch.Tensor, a0_raw: torch.Tensor,
+) -> tuple[tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
+	""" solve an equation of the form a3 x³ + a2 x² + a1 x + a0 = 0, in a differentiable fashion """
+	a2 = a2_raw/a3_raw
+	a1 = a1_raw/a3_raw
+	a0 = a0_raw/a3_raw
+
+	q = a1/3 - a2**2/9
+	r = (a1*a2 - 3*a0)/6 - a2**3/27
+	sign = torch.where(r > zero, one, -one)
+	A = sign*(torch.abs(r) + torch.sqrt(r**2 + q**3))**(1/3)
+	t1 = A - q/A
+	θ = torch.where(
+		q == zero, zero,
+		torch.arccos(r/(-q)**(3/2)),
+	)
+	φ1 = θ/3
+	φ2 = φ1 - 2*pi/3
+	φ3 = φ1 + 2*pi/3
+	x1 = torch.where(
+		r**2 + q**3 > zero,
+		t1 - a2/3,
+		2*torch.sqrt(-q)*torch.cos(φ1) - a2/3,
+	)
+	x2 = torch.where(
+		r**2 + q**3 > zero,
+		-t1/2 - a2/3,
+		2*torch.sqrt(-q)*torch.cos(φ2) - a2/3,
+	)
+	y2 = torch.where(
+		r**2 + q**3 > zero,
+		sqrt(3)/2*(A + q/A),
+		zero,
+	)
+	x3 = torch.where(
+		r**2 + q**3 > zero,
+		x2,
+		2*torch.sqrt(-q)*torch.cos(φ3) - a2/3,
+	)
+	y3 = torch.where(
+		r**2 + q**3 > zero,
+		-y2,
+		zero,
+	)
+
+	(x1_backup, y1_backup), (x2_backup, y2_backup) = solve_quadratic_equation(a2_raw, a1_raw, a0_raw)
+
+	return (
+		(torch.where(a3_raw != zero, x1, x1_backup), torch.where(a3_raw != zero, zero, y1_backup)),
+		(torch.where(a3_raw != zero, x2, x2_backup), torch.where(a3_raw != zero, y2, y2_backup)),
+		(torch.where(a3_raw != zero, x3, torch.nan), torch.where(a3_raw != zero, y3, torch.nan)),
+	)
+
+
+def solve_quadratic_equation(
+		a2: torch.Tensor, a1: torch.Tensor, a0: torch.Tensor,
+) -> tuple[tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
+	""" solve an equation of the form a2 x² + a1 x + a0 = 0, in a differentiable fashion """
+	constant = -a1/(2*a2)
+	discriminant = (1/2*a1/a2)**2 - a0/a2
+
+	x1 = torch.where(
+		discriminant >= zero,
+		constant + torch.sqrt(discriminant),
+		constant,
+	)
+	y1 = torch.where(
+		discriminant >= zero,
+		zero,
+		+torch.sqrt(-discriminant),
+	)
+	x2 = torch.where(
+		discriminant >= zero,
+		constant - torch.sqrt(discriminant),
+		constant,
+	)
+	y2 = torch.where(
+		discriminant >= zero,
+		zero,
+		-torch.sqrt(-discriminant),
+	)
+
+	x1_backup = torch.where(a1 != zero, -a0/a1, torch.nan)
+	y1_backup = torch.where(a1 != zero, zero, torch.nan)
+
+	return (
+		(torch.where(a2 != zero, x1, x1_backup), torch.where(a2 != zero, y1, y1_backup)),
+		(torch.where(a2 != zero, x2, torch.nan), torch.where(a2 != zero, y2, torch.nan)),
+	)
 
 
 def fit_line(x: Tensor, y: Tensor, parameters: Line) -> Tuple[Tensor, Tensor]:
@@ -290,6 +491,36 @@ def spline_gradient(x_input: NDArray, y_input: NDArray, spline: Spline) -> Tenso
 	return torch.stack([x_gradients, y_gradients], dim=-1)
 
 
+def spline_hessian(x_input: NDArray, y_input: NDArray, spline: Spline) -> Tensor:
+	# find out in what cell each input point is
+	i_node, di_input = digitize(y_input, spline.y_node)
+	j_node, dj_input = digitize(x_input, spline.x_node)
+
+	# apply the 4×4 differentiated convolution kernel
+	xx_term = torch.zeros(shape(x_input) + shape(spline.z_node)[2:], dtype=torch.float64)
+	xy_term = torch.zeros(shape(x_input) + shape(spline.z_node)[2:], dtype=torch.float64)
+	yy_term = torch.zeros(shape(x_input) + shape(spline.z_node)[2:], dtype=torch.float64)
+	row_weits = {Δi: bicubic_function(di_input - Δi, -Δi) for Δi in range(-2, 2)}
+	col_weits = {Δj: bicubic_function(dj_input - Δj, -Δj) for Δj in range(-2, 2)}
+	row_slopes = {Δi: bicubic_function_derivative(di_input - Δi, -Δi) for Δi in range(-2, 2)}
+	col_slopes = {Δj: bicubic_function_derivative(dj_input - Δj, -Δj) for Δj in range(-2, 2)}
+	row_curves = {Δi: bicubic_function_twoth_derivative(di_input - Δi, -Δi) for Δi in range(-2, 2)}
+	col_curves = {Δj: bicubic_function_twoth_derivative(dj_input - Δj, -Δj) for Δj in range(-2, 2)}
+	for Δi in range(-2, 2):
+		for Δj in range(-2, 2):
+			xx_weit = torch.as_tensor(row_weits[Δi]*col_curves[Δj])
+			xx_term += xx_weit*spline.z_node[i_node + Δi, j_node + Δj, ...]
+			xy_weit = torch.as_tensor(row_slopes[Δi]*col_slopes[Δj])
+			xy_term += xy_weit*spline.z_node[i_node + Δi, j_node + Δj, ...]
+			yy_weit = torch.as_tensor(row_curves[Δi]*col_weits[Δj])
+			yy_term += yy_weit*spline.z_node[i_node + Δi, j_node + Δj, ...]
+	# don't forget to scale to correct for the change of coordinates earlier in this function
+	xx_term /= (spline.x_node[1] - spline.x_node[0])**2
+	xy_term /= (spline.x_node[1] - spline.x_node[0])*(spline.y_node[1] - spline.y_node[0])
+	yy_term /= (spline.y_node[1] - spline.y_node[0])**2
+	return torch.stack([xx_term, xy_term, xy_term, yy_term], dim=-1).reshape((-1, 2, 2))
+
+
 def bicubic_function(x: NDArray, section: int) -> NDArray:
 	if section == -1:
 		return 0.5*x**3 + 2.5*x**2 + 4*x + 2
@@ -314,6 +545,24 @@ def bicubic_function_derivative(x: NDArray, section: int) -> NDArray:
 		return -1.5*x**2 + 5*x - 4
 	else:
 		return zeros_like(x)
+
+
+def bicubic_function_twoth_derivative(x: NDArray, section: int) -> NDArray:
+	if section == -1:
+		return 3*x + 5
+	elif section == 0:
+		return -9*x - 5
+	elif section == 1:
+		return 9*x - 5
+	elif section == 2:
+		return -3*x + 5
+	else:
+		return zeros_like(x)
+
+
+def midpoints(x: NDArray) -> NDArray:
+	""" convert an array of interval edges to an array of interval centers """
+	return (x[0:-1] + x[1:])/2
 
 
 def digitize(x, bins) -> Tuple[NDArray, NDArray]:
