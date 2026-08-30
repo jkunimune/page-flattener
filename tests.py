@@ -1,7 +1,4 @@
-from typing import Callable
-
-import torch
-from numpy import array, meshgrid, all, nan, sqrt, isfinite
+from numpy import array, meshgrid, all, nan, sqrt, isfinite, float64
 from numpy.core.numeric import isclose
 
 from dewarp import paperlike_fraction, apply_spline, Spline, spline_gradient, spline_hessian, solve_quartic_equation, \
@@ -103,35 +100,35 @@ def test_spline_hessian():
 def test_quartic_solver():
 	# four roots
 	assert all(isclose(
-		unvectorize(solve_quartic_equation)(10., -100., 350., -500., 240.),
+		solve_quartic_equation(float64(10), float64(-100), float64(350), float64(-500), float64(240)),
 		[4., 3., 2., 1.],
 		atol=1e-3,
 	))
 
 	# two roots
 	assert all(isclose(
-		unvectorize(solve_quartic_equation)(10., -80., 240., -320., 150.),
+		solve_quartic_equation(float64(10), float64(-80), float64(240), float64(-320), float64(150)),
 		[3., 1., nan, nan],
 		atol=1e-3, equal_nan=True,
 	))
 
 	# no roots
 	assert all(isclose(
-		unvectorize(solve_quartic_equation)(10., -80., 240., -320., 170.),
+		solve_quartic_equation(float64(10), float64(-80), float64(240), float64(-320), float64(170)),
 		[nan, nan, nan, nan],
 		atol=1e-3, equal_nan=True,
 	))
 
 	# multiple-root
 	assert all(isclose(
-		unvectorize(solve_quartic_equation)(10., -80., 240., -320., 160.),
+		solve_quartic_equation(float64(10), float64(-80), float64(240), float64(-320), float64(160)),
 		[2., 2., 2., 2.],
 		atol=1e-3,
 	))
 
 	# cubic
 	assert all(isclose(
-		unvectorize(solve_quartic_equation)(0., 10., -60., 110., -60.),
+		solve_quartic_equation(float64(0), float64(10), float64(-60), float64(110), float64(-60)),
 		[3., 2., 1., nan],
 		atol=1e-4, equal_nan=True,
 	))
@@ -140,24 +137,24 @@ def test_quartic_solver():
 def test_cubic_solver():
 	# three roots
 	assert all(isclose(
-		unvectorize(solve_cubic_equation)(10., -60., 110., -60.),
+		solve_cubic_equation(float64(10), float64(-60), float64(110), float64(-60)),
 		[(3., 0.), (2., 0.), (1., 0.)],
 	))
 
 	# one root
 	assert all(isclose(
-		unvectorize(solve_cubic_equation)(10., -60., 120., -90.),
+		solve_cubic_equation(float64(10), float64(-60), float64(120), float64(-90)),
 		[(3., 0.), (1.5, sqrt(3)/2), (1.5, -sqrt(3)/2)],
 	))
 
 	# multiple-root
 	assert all(isclose(
-		unvectorize(solve_cubic_equation)(10., -60., 120., -80.),
+		solve_cubic_equation(float64(10), float64(-60), float64(120), float64(-80)),
 		[(2., 0.), (2., 0.), (2., 0.)],
 	))
 	# quadratic
 	assert all(isclose(
-		unvectorize(solve_cubic_equation)(0., 10., -30., 20.),
+		solve_cubic_equation(float64(0), float64(10), float64(-30), float64(20)),
 		[(2., 0.), (1., 0.), (nan, nan)],
 		equal_nan=True,
 	))
@@ -166,100 +163,86 @@ def test_cubic_solver():
 def test_quadratic_solver():
 	# two roots
 	assert all(isclose(
-		unvectorize(solve_quadratic_equation)(10., -40., 30.),
+		solve_quadratic_equation(float64(10), float64(-40), float64(30)),
 		[(3., 0.), (1., 0.)],
 	))
 
 	# no roots
 	assert all(isclose(
-		unvectorize(solve_quadratic_equation)(10., -40., 50.),
+		solve_quadratic_equation(float64(10), float64(-40), float64(50)),
 		[(2., 1.), (2., -1.)],
 	))
 
 	# multiple-root
 	assert all(isclose(
-		unvectorize(solve_quadratic_equation)(10., -40., 40.),
+		solve_quadratic_equation(float64(10), float64(-40), float64(40)),
 		[(2., 0.), (2., 0.)],
 	))
 
 	# linear
 	assert all(isclose(
-		unvectorize(solve_quadratic_equation)(0., 10., -10.),
+		solve_quadratic_equation(float64(0), float64(10), float64(-10)),
 		[(1., 0.), (nan, nan)],
 		equal_nan=True,
 	))
 
 	# oops all zero
 	assert all(isclose(
-		unvectorize(solve_quadratic_equation)(0., 0., 0.),
+		solve_quadratic_equation(float64(0), float64(0), float64(0)),
 		[(nan, nan), (nan, nan)],
 		equal_nan=True,
 	))
 
 
 def test_paperlike_fraction():
-	pure_x_hessian = torch.tensor([[
+	pure_x_hessian = array([[
 		[1, -2],
 		[-2, 4],
 	]])
-	pure_y_hessian = torch.tensor([[
+	pure_y_hessian = array([[
 		[-3, 6],
 		[6, -12],
 	]])
 	assert paperlike_fraction(pure_x_hessian, pure_y_hessian) == 1
 
-	mixed_x_hessian = torch.tensor([[
+	mixed_x_hessian = array([[
 		[1 + 12, -2 + 6],
 		[-2 + 6, 4 + 3],
 	]])
-	mixed_y_hessian = torch.tensor([[
+	mixed_y_hessian = array([[
 		[-3 + 4, 6 + 2],
 		[6 + 2, -12 + 1],
 	]])
 	assert isclose(paperlike_fraction(mixed_x_hessian, mixed_y_hessian), 1/2)
 
-	rando_x_hessian = torch.tensor([[
+	rando_x_hessian = array([[
 		[1, 2],
 		[2, -3],
 	]])
-	rando_y_hessian = torch.tensor([[
+	rando_y_hessian = array([[
 		[6, -5],
 		[-5, -4],
 	]])
 	assert isclose(paperlike_fraction(rando_x_hessian, rando_y_hessian), 0.552543, atol=1e-6)
 
 	# there's some shenanigans that happens when one of the principal components is [[0, 1], [1, 0]]
-	degenerate_x_hessian = torch.tensor([[
+	degenerate_x_hessian = array([[
 		[0, -1],
 		[-1, 0],
 	]])
-	degenerate_y_hessian = torch.tensor([[
+	degenerate_y_hessian = array([[
 		[2, 0],
 		[0, 0],
 	]])
 	assert isclose(paperlike_fraction(degenerate_x_hessian, degenerate_y_hessian), 2/3)
 
 	# oops all zero
-	flat_x_hessian = torch.tensor([[
+	flat_x_hessian = array([[
 		[0, 0],
 		[0, 0],
 	]])
-	flat_y_hessian = torch.tensor([[
+	flat_y_hessian = array([[
 		[0, 0],
 		[0, 0],
 	]])
 	assert isfinite(paperlike_fraction(flat_x_hessian, flat_y_hessian))
-
-
-def unvectorize(func: Callable) -> Callable:
-	def call_func_on_floats(*args: float):
-		tensor_result = func(*(torch.tensor(x) for x in args))
-		return recursively_extract_tensors(tensor_result)
-	return call_func_on_floats
-
-
-def recursively_extract_tensors(structure):
-	if type(structure) is torch.Tensor:
-		return structure.numpy()
-	else:
-		return [recursively_extract_tensors(component) for component in structure]

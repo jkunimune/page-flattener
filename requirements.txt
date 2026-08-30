@@ -1,0 +1,4 @@
+autograd
+matplotlib
+numpy
+scipy
